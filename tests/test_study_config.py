@@ -135,3 +135,8 @@ def test_load_study_raises_a_friendly_error(tmp_path):
     with pytest.raises(StudyFileError) as err:
         load_study(tmp_path)
     assert "missing section 'about'" in str(err.value)
+
+
+def test_missing_qc_threshold_is_reported(heights):
+    problems = problems_after(heights, lambda s: s["qc"]["thresholds"].pop("coverage_min"))
+    assert problems == ["qc.thresholds: missing setting 'coverage_min'"]

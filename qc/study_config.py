@@ -31,6 +31,13 @@ REQUIRED = {
     "qc": ["thresholds"],
 }
 COMPLETION_CODES = ["complete", "no_consent", "slow_download"]
+# The advisory QC thresholds qc_lib uses (qc.thresholds); see the heights example for what each means.
+THRESHOLDS = ["teleport_px", "teleport_isolation_ms", "teleport_count_review", "stalled_s_review",
+              "identical_run_review", "identical_min_px", "big_step_frac_review", "pure_axis_review",
+              "pure_axis_min_events", "coverage_min", "interruptions_review", "interrupted_s_review",
+              "no_input_s_review", "away_s_review", "practice_mae_review", "practice_err2d_review", "quadrant_min",
+              "attention_failed_reject", "text_keys_per_char_reject", "text_min_chars_for_key_check",
+              "typing_cpm_review", "ai_markers_review", "duplicate_text_ratio"]
 SLOTS = ["intro", "before_film", "after_film", "end"]
 PAGE_TYPES = ["likert", "multi_choice", "multi_select", "text", "free_text", "scale", "html_form"]
 
@@ -98,6 +105,8 @@ def check_study(study) -> list[str]:
         problems += [f"{section}: missing setting '{k}'" for k in keys if k not in study[section]]
     if problems:
         return problems  # the checks below need the sections
+    thresholds = study["qc"]["thresholds"] or {}
+    problems += [f"qc.thresholds: missing setting '{k}'" for k in THRESHOLDS if k not in thresholds]
     problems += _check_rating(study)
     problems += _check_codes(study)
     for slot in study["questionnaires"]:

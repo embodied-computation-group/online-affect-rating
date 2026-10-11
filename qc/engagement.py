@@ -58,7 +58,9 @@ def main() -> None:
         study = load_study(a.study)
     except StudyFileError as err:
         sys.exit(str(err))
-    E = study["qc"]["engagement"]
+    E = study["qc"].get("engagement")
+    if not E:
+        sys.exit("The study file has no qc.engagement section (see studies/heights-film/study.yaml)")
     BOUT_GAP, WIN, EVENT_PCT, NPERM = E["bout_gap_s"], E["window_s"], E["event_pct"], E["n_permutations"]
     T = np.arange(0, np.floor(study["film"]["duration_s"]), 1.0)
     dims_2d = [d for d in study["rating"]["dimensions"] if dimension_axes(study, d) == 2]
