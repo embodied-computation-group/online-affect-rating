@@ -11,6 +11,7 @@ Every Python script takes the study folder as  --study studies/<name>.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -109,11 +110,26 @@ def check_study(study) -> list[str]:
     problems += [f"qc.thresholds: missing setting '{k}'" for k in THRESHOLDS if k not in thresholds]
     problems += _check_rating(study)
     problems += _check_codes(study)
+    problems += _check_markers(study)
     for slot in study["questionnaires"]:
         if slot not in SLOTS:
             problems.append(f"questionnaires: unknown place '{slot}' (use {', '.join(SLOTS)})")
     for page in questionnaire_pages(study):
         problems += _check_page(study, page)
+    return problems
+
+
+def _check_markers(study) -> list[str]:
+    """qc.ai_markers (optional) must be a list of valid regular expressions."""
+    markers = study["qc"].get("ai_markers") or []
+    if not isinstance(markers, list):
+        return ["qc.ai_markers: should be a list of phrases"]
+    problems = []
+    for m in markers:
+        try:
+            re.compile(str(m))
+        except re.error as e:
+            problems.append(f"qc.ai_markers: '{m}' is not a valid regular expression ({e})")
     return problems
 
 

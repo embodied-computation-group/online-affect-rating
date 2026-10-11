@@ -45,16 +45,6 @@ def scope_filter(rep, study: dict, scope: str = "exploratory"):
     expl = rep["prolific_study_id"].isin(set(exploratory_ids))
     return rep[real & ~expl] if scope == "confirmatory" else rep[expl]
 
-# Phrases/characters that are common in LLM output and rare in quick participant prose. Advisory only:
-# a hit is a reason to read the text, never evidence by itself.
-AI_MARKERS = [
-    r"\bdelve\b", r"\btapestry\b", r"\bnavigat(e|ing) the\b", r"\btestament to\b", r"\bin conclusion\b",
-    r"\boverall,", r"\bit'?s worth noting\b", r"\bas an ai\b", r"\blanguage model\b", r"\bvisceral\b",
-    r"\bpalpable\b", r"\bjuxtapos", r"\bunderscore[sd]?\b", r"\ba sense of (awe|unease|vertigo)\b",
-    r"\bheightened sense\b", r"\bmultifaceted\b", r"—",
-]
-
-
 @dataclass
 class Session:
     path: Path
@@ -227,9 +217,10 @@ def _coverage(samples: pd.DataFrame, film_duration_s: float) -> float:
     return min(1.0, covered / math.floor(film_duration_s))
 
 
-def ai_marker_hits(text: str) -> list[str]:
+def ai_marker_hits(text: str, markers: list[str]) -> list[str]:
+    """The phrasing markers (regular expressions from qc.ai_markers in the study file) found in a text."""
     tl = text.lower()
-    return [m for m in AI_MARKERS if re.search(m, tl)]
+    return [m for m in markers if re.search(m, tl)]
 
 
 def _pages(study: dict, types: tuple, slots=SLOTS) -> list[dict]:
@@ -362,7 +353,7 @@ def session_metrics(s: Session, study: dict) -> dict:
     r["text_paste_drop_attempts"] = sum(e.get("e") in ("paste_blocked", "drop_blocked", "insert_blocked") for e in tev)
     r["paste_blocked"] = integ.get("paste_blocked", sm.get("paste_blocked"))
     r["copy_blocked"] = integ.get("copy_blocked", sm.get("copy_blocked"))
-    r["ai_markers"] = ";".join(ai_marker_hits(text)) if text else ""
+    r["ai_markers"] = ";".join(ai_marker_hits(text, study["qc"].get("ai_markers") or [])) if text else ""
 
     # feedback: the answer to the first question of the first "text" page
     fb_pages = _pages(study, ("text",))

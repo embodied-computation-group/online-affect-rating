@@ -140,3 +140,10 @@ def test_load_study_raises_a_friendly_error(tmp_path):
 def test_missing_qc_threshold_is_reported(heights):
     problems = problems_after(heights, lambda s: s["qc"]["thresholds"].pop("coverage_min"))
     assert problems == ["qc.thresholds: missing setting 'coverage_min'"]
+
+
+def test_checker_reports_a_broken_phrasing_marker():
+    study = load_study(ROOT / "studies" / "heights-film")
+    assert check_study(study) == []
+    study["qc"]["ai_markers"] = study["qc"]["ai_markers"] + ["(unclosed"]
+    assert any("not a valid regular expression" in p for p in check_study(study))

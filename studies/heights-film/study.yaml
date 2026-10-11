@@ -492,6 +492,29 @@ qc:
     - {question: seen_before, answer: "Yes", reason: had seen the film}
     - {question: full_attention, answer: "No", reason: reports not watching attentively}
 
+  # Phrases and characters common in text written by large language models and rare in quick participant
+  # writing: regular expressions matched against the lower-cased free text. Advisory only - a hit is a
+  # reason to read the text, never evidence by itself. A session with at least thresholds.ai_markers_review
+  # different hits is flagged for review. Leave the list empty to switch the check off.
+  ai_markers:
+    - '\bdelve\b'
+    - '\btapestry\b'
+    - '\bnavigat(e|ing) the\b'
+    - '\btestament to\b'
+    - '\bin conclusion\b'
+    - '\boverall,'
+    - '\bit''?s worth noting\b'
+    - '\bas an ai\b'
+    - '\blanguage model\b'
+    - '\bvisceral\b'
+    - '\bpalpable\b'
+    - '\bjuxtapos'
+    - '\bunderscore[sd]?\b'
+    - '\ba sense of (awe|unease|vertigo)\b'
+    - '\bheightened sense\b'
+    - '\bmultifaceted\b'
+    - '—'
+
   # Preregistered hard exclusions (osf.io/s2yvb, "Data inclusion and exclusion", rules 1-7), applied by
   # qc_lib.prereg_hard_exclusion. These are fixed by the preregistration: do not change them for this study.
   hard_exclusions:

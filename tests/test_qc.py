@@ -92,9 +92,13 @@ def test_longest_no_input_includes_film_start_and_end():
 
 
 def test_ai_markers_find_llm_phrases():
-    hits = ai_marker_hits("Overall, the film was a testament to courage — truly palpable.")
+    markers = STUDY["qc"]["ai_markers"]  # from the study file
+    hits = ai_marker_hits("Overall, the film was a testament to courage — truly palpable.", markers)
     assert len(hits) == 4  # "overall,", "testament to", "palpable", the long dash
-    assert ai_marker_hits("I felt sick when they looked down.") == []
+    assert ai_marker_hits("I felt sick when they looked down.", markers) == []
+    assert ai_marker_hits("It's worth noting how visceral it was.", markers) == [r"\bit'?s worth noting\b",
+                                                                                r"\bvisceral\b"]
+    assert ai_marker_hits("Overall, a testament to it.", []) == []  # an empty list switches the check off
 
 
 def test_duplicate_text_flags_name_the_most_similar_participant():

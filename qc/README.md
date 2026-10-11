@@ -42,6 +42,6 @@ the task is off-platform, so the evidence is ours – keep the plot/report row w
   with no rating input, lots of time away from the window, poor practice/quadrant performance, seen the film before,
   self-reported inattention, page reloads, incomplete session
 
-LLM phrasing markers are in `qc_lib.AI_MARKERS` (a hit is a reason to read, not proof).
+LLM phrasing markers are listed in the study file (`qc.ai_markers`; a hit is a reason to read, not proof).
 Note: browser-automation tools that drive a real browser produce "trusted" events; judge those by the movement
 patterns in the plot (straight lines, identical steps, jumps, ratings that never react to the film).
