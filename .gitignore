@@ -30,3 +30,4 @@ qc/out/
 prolific/jatos_link.txt
 .claude/*
 !.claude/settings.json
+.pytest_cache/
