@@ -1,9 +1,14 @@
 /**
- * Timeline: consent -> device check -> pre-film questions -> fullscreen -> instructions
- * -> practice -> pre-STICSA (somatic) -> film -> post-STICSA -> remaining questions -> texts.
- * (Detailed:) consent -> device check -> pre-film questions -> fullscreen -> instructions
- * -> slider practice (repeated once if inaccurate) -> film with continuous rating
- * -> post-film questions -> save -> redirect to Prolific.
+ * Timeline: consent -> device check -> questionnaires "intro" -> fullscreen -> instructions
+ * -> practice (repeated once if inaccurate; 2D: placement practice) -> film download wait if needed
+ * -> questionnaires "before_film" -> film with continuous rating -> questionnaires "after_film"
+ * -> leave fullscreen -> questionnaires "end" -> debrief -> save -> redirect to Prolific.
+ *
+ * Everything study-specific (film, texts, questionnaires, codes) comes from the study file
+ * (studies/<name>/study.yaml, read by study.js); the questionnaire pages are built by questionnaires.js.
+ * For the heights study (studies/heights-film) the questionnaires are: intro = fear of heights +
+ * attention check 1; before_film = STICSA (pre); after_film = STICSA (post); end = post-film questions,
+ * written description and feedback.
  *
  * Runs on JATOS (jatos.js present) or locally (data downloaded as JSON at the end).
  *
@@ -11,6 +16,9 @@
  * local). A participant who reloads after the practice goes straight back to the
  * film, resuming CONFIG.resumeRewindSeconds before the last saved position; the
  * gap and the number of loads are logged. Locally, ?reset=1 clears the session.
+ *
+ * Testing URL parameters (start_time, max_wait_s, video) work only locally or in test mode
+ * (study file test_mode: true, or JATOS Study input {"testMode": true}); see StudyFile.testParams.
  *
  * Result data are newline-delimited JSON appended to the JATOS result:
  *   {"type":"meta",...}    once at start
@@ -38,13 +46,42 @@
     return saveChain;
   }
 
-  /** STICSA somatic total for a time point (last completed administration), or null. */
-  function sticsaTotal(d, timepoint) {
-    const t = d.filter({ task: "sticsa", timepoint }).values();
+  let study = null; // the study file, loaded in run()
+
+  /** All questionnaire pages of the study, in session order. */
+  function allPages() {
+    const q = study.questionnaires || {};
+    return ["intro", "before_film", "after_film", "end"].flatMap((slot) => q[slot] || []);
+  }
+
+  /** Total of a scale page (last completed administration), or null. */
+  function scaleTotal(d, page) {
+    const filter = page.timepoint ? { task: page.scale, timepoint: page.timepoint } : { task: page.scale };
+    const t = d.filter(filter).values();
     if (t.length) return t[t.length - 1].total;
     // administered before a reload: total kept in the session
-    const v = session[`sticsa_${timepoint}_total`];
+    const v = session[`${Questionnaires.pageKey(page)}_total`];
     return v === undefined ? null : v;
+  }
+
+  /** Scale totals for the summary, e.g. sticsa_pre_total, sticsa_post_total, sticsa_change. */
+  function scaleSummary(d) {
+    const out = {};
+    const byScale = {};
+    for (const page of allPages().filter((p) => p.type === "scale")) {
+      (byScale[page.scale] = byScale[page.scale] || []).push(page);
+    }
+    for (const [name, pages] of Object.entries(byScale)) {
+      for (const page of pages) out[`${Questionnaires.pageKey(page)}_total`] = scaleTotal(d, page);
+      const pre = pages.find((p) => p.timepoint === "pre");
+      const post = pages.find((p) => p.timepoint === "post");
+      if (pre && post) {
+        const a = scaleTotal(d, pre);
+        const b = scaleTotal(d, post);
+        out[`${name}_change`] = a !== null && b !== null ? b - a : null;
+      }
+    }
+    return out;
   }
 
   /** Compact data-quality summary, written with the final data (for reviewing submissions). */
@@ -54,7 +91,8 @@
     const film = d.filter({ task: "film" }).values();
     const prac = d.filter({ task: "practice" }).values();
     const quad = d.filter({ task: "quadrant_practice" }).values();
-    const ft = d.filter({ task: "final_text" }).values()[0];
+    const freeText = allPages().find((p) => p.type === "free_text");
+    const ft = freeText ? d.filter({ task: freeText.name }).values()[0] : undefined;
     return {
       attention_checks_failed: att.reduce((n, a) => n + a.n_failed, 0),
       attention_checks_total: att.reduce((n, a) => n + a.n_checks, 0),
@@ -65,13 +103,7 @@
       film_stalled_ms: film.reduce((n, f) => n + f.stalled_ms, 0),
       film_untrusted_events: film.reduce((n, f) => n + (f.n_untrusted_events || 0), 0),
       film_max_mouse_step_px: film.reduce((m, f) => Math.max(m, f.max_mouse_step_px || 0), 0),
-      sticsa_pre_total: sticsaTotal(d, "pre"),
-      sticsa_post_total: sticsaTotal(d, "post"),
-      sticsa_change: (() => {
-        const a = sticsaTotal(d, "pre");
-        const b = sticsaTotal(d, "post");
-        return a !== null && b !== null ? b - a : null;
-      })(),
+      ...scaleSummary(d),
       preload_ms: preload.ms,
       preload_mbps: preload.ms ? Math.round((preload.bytes * 8) / (preload.ms / 1000) / 1e4) / 100 : null,
       preload_failed: preload.failed,
@@ -236,10 +268,30 @@
     return Promise.resolve();
   }
 
+  /** Message when the study cannot start (no or broken study file). */
+  function showStartError(html) {
+    document.body.innerHTML = `<div class="end-msg">${html}</div>`;
+  }
+
   // ---- main ---------------------------------------------------------------
-  function run() {
+  async function run() {
     const params = onJatos ? jatos.urlQueryParameters || {} : Object.fromEntries(new URLSearchParams(location.search));
-    const cfg = Object.assign({}, CONFIG, onJatos && jatos.studyInput ? jatos.studyInput : {});
+    const studyUrl = StudyFile.studyFileUrl(onJatos, params);
+    if (!studyUrl) {
+      showStartError(`<p>Running locally: add the study folder to the address, e.g.
+        <code>index.html?study=heights-film&amp;dim=anxiety&amp;reset=1</code> (a folder in <code>studies/</code>).</p>`);
+      return;
+    }
+    try {
+      study = await StudyFile.loadStudy(studyUrl);
+    } catch (err) {
+      showStartError(`<p>The study could not start: ${err.message}</p>`);
+      console.error(err);
+      return;
+    }
+    const cfg = Object.assign({}, StudyFile.buildConfig(study), onJatos && jatos.studyInput ? jatos.studyInput : {});
+    window.CONFIG = cfg; // for debugging and the automated run-through (tests/e2e_local.py)
+    const testing = StudyFile.testParams(params, onJatos, cfg); // {} for participants on JATOS
 
     loadSession(params.reset === "1");
     setSession({ n_loads: (session.n_loads || 0) + 1 });
@@ -255,11 +307,11 @@
     const isJoy = inputMode === "joystick" || is2D;
     setSession({ dim: dimKey, input: inputMode });
 
-    const videoUrl = params.video || (onJatos ? cfg.videoUrl : cfg.localVideoUrl);
+    const videoUrl = testing.video || (onJatos ? cfg.videoUrl : cfg.localVideoUrl);
     const resumeFilm = !!session.practice_done && !session.film_done;
     const skipToQuestions = !!session.film_done;
     const resumeFrom = resumeFilm && session.film_t ? Math.max(0, session.film_t - cfg.resumeRewindSeconds) : 0;
-    const startTime = resumeFrom || parseFloat(params.start_time) || 0; // start_time param: testing only
+    const startTime = resumeFrom || parseFloat(testing.start_time) || 0; // start_time param: testing only
 
     installIntegrityGuards();
     let exitReason = null; // e.g. "slow_download"
@@ -333,82 +385,36 @@
       on_chunk: onChunk,
     };
 
-    const likert7 = (low, high) => [low, "", "", "", "", "", high];
-
-    // Score instructed-response attention checks embedded in a survey-likert page.
-    const scoreAttention = (d, checks) => {
-      d.n_checks = checks.length;
-      d.n_failed = checks.filter((c) => d.response[c.name] !== c.correctIndex).length;
-      d.attention = Object.fromEntries(checks.map((c) => [c.name, d.response[c.name] === c.correctIndex]));
-      d.task = "attention";
-      d.page = d.page || "";
-    };
-    const attentionItem = (c) => ({ name: c.name, prompt: c.prompt, labels: c.labels, required: true });
-
-    // STICSA somatic subscale, identical page before and after the film. Responses start unselected
-    // and are required; previous answers/scores are never shown. Missing answers stay null (never 0).
-    const sticsaTrial = (timepoint) => {
-      const S = TEXTS.sticsa;
-      let onsetIso = null;
-      let onsetPerf = 0;
-      const head = S.options.map((o) => `<th scope="col">${o.label}</th>`).join("");
-      const rows = S.items
-        .map(
-          ([n, text]) => `<tr><th scope="row" class="sticsa-item">${text}</th>${S.options
-            .map(
-              (o) => `<td><label class="sticsa-cell"><input type="radio" name="sticsa_${n}" value="${o.value}"
-                aria-label="${text} ${o.label}" required></label></td>`
-            )
-            .join("")}</tr>`
-        )
-        .join("");
-      return {
-        type: jsPsychSurveyHtmlForm,
-        preamble: `<div class="text-page sticsa-head"><h2>${S.title}</h2><p>${S.instruction}</p></div>`,
-        html: `<table class="sticsa-table"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table>`,
-        button_label: "Continue",
-        data: { task: "sticsa", timepoint },
-        on_load: () => {
-          onsetIso = new Date().toISOString();
-          onsetPerf = performance.now();
-        },
-        on_finish: (d) => {
-          d.onset = onsetIso;
-          d.completion = new Date().toISOString();
-          d.duration_ms = Math.round(performance.now() - onsetPerf);
-          d.items = S.items.map(([n, text]) => {
-            const v = d.response[`sticsa_${n}`];
-            return { item: n, text, response: v === undefined || v === "" ? null : Number(v) };
-          });
-          d.n_answered = d.items.filter((i) => i.response !== null).length;
-          d.total = d.n_answered === S.items.length ? d.items.reduce((a, i) => a + i.response, 0) : null;
-          if (timepoint === "post") {
-            d.pre_total = session.sticsa_pre_total ?? null;
-            d.change = d.total !== null && d.pre_total !== null ? d.total - d.pre_total : null;
-          }
-          setSession({ [`sticsa_${timepoint}_done`]: true, [`sticsa_${timepoint}_total`]: d.total });
-        },
-      };
-    };
+    // Questionnaire pages from the study file. {placeholders} in their texts are filled from the
+    // study's "about" section plus these values.
+    const textValues = Object.assign({}, study.about, {
+      film_length: cfg.filmLengthText,
+      dimension_label: dim.label,
+      rating_control: isJoy ? "mouse control" : "slider",
+    });
+    const fill = (text) => StudyFile.fillText(text, textValues);
+    const qctx = { study, fill, session, setSession, integrity };
+    const questionnaire = (slot) => (study.questionnaires || {})[slot] || [];
+    const texts = study.texts;
 
     // Fresh start: consent .. practice. After a reload past the practice these are skipped.
     const intro = [];
     const timeline = [];
 
-    // Participant information + consent (texts in texts.js). The consent button is enabled
+    // Participant information + consent (texts in the study file). The consent button is enabled
     // only once every statement is ticked; declining is always possible.
     intro.push({
       type: jsPsychHtmlButtonResponse,
       stimulus: `<div class="text-page consent">
-        <div class="info-sheet">${TEXTS.information(cfg)}</div>
+        <div class="info-sheet">${fill(texts.information)}</div>
         <h3>Consent</h3>
         <p>Please tick each statement to take part:</p>
         <ul class="consent-list">
-          ${TEXTS.consentStatements
+          ${texts.consent_statements
             .map((t, i) => `<li><label><input type="checkbox" class="consent-cb" data-i="${i}"> ${t}</label></li>`)
             .join("")}
         </ul></div>`,
-      choices: [TEXTS.consentButton, TEXTS.declineButton],
+      choices: [texts.consent_button, texts.decline_button],
       on_load: () => {
         const btns = document.querySelectorAll("#jspsych-html-button-response-btngroup button");
         const boxes = [...document.querySelectorAll(".consent-cb")];
@@ -419,7 +425,7 @@
       data: { task: "consent" },
       on_finish: (d) => {
         d.consent = d.response === 0;
-        d.consent_statements = TEXTS.consentStatements;
+        d.consent_statements = texts.consent_statements;
         if (!d.consent) {
           jsPsych.abortExperiment(TEXTS.noConsent);
         } else {
@@ -442,25 +448,8 @@
     });
 
 
-    // Pre-film questions (trait measure before the film can colour it) + attention check 1.
-    intro.push({
-      type: jsPsychSurveyLikert,
-      preamble: "<h3>A few questions about you</h3>",
-      questions: [
-        {
-          name: "height_fear",
-          prompt: "In everyday life, how afraid are you of heights?",
-          labels: likert7("Not at all", "Extremely"),
-          required: true,
-        },
-        attentionItem(TEXTS.attentionCheck1),
-      ],
-      data: { page: "pre_film" },
-      on_finish: (d) => {
-        d.pre_film = d.response;
-        scoreAttention(d, [TEXTS.attentionCheck1]);
-      },
-    });
+    // Questionnaires before the practice (heights study: fear of heights + attention check 1).
+    for (const page of questionnaire("intro")) intro.push(Questionnaires.makePage(page, qctx));
 
     intro.push({
       type: jsPsychFullscreen,
@@ -615,7 +604,7 @@
               const fill = document.getElementById("dl-fill");
               const txt = document.getElementById("dl-text");
               const waited = performance.now() - t0;
-              const maxWait = parseFloat(params.max_wait_s) * 1000 || cfg.preloadMaxWaitMs; // max_wait_s: testing
+              const maxWait = parseFloat(testing.max_wait_s) * 1000 || cfg.preloadMaxWaitMs; // max_wait_s: testing
               if (!preload.done && (preload.failed || waited > maxWait) && cfg.returnOnSlowDownload) {
                 exitReason = "slow_download";
                 appendLine({ type: "preload", e: "gave_up", t: new Date().toISOString(), waited_ms: Math.round(waited),
@@ -653,7 +642,12 @@
     const skipIntro = !onJatos && params.skip === "intro";
     if (!resumeFilm && !skipToQuestions && !skipIntro) timeline.push(...intro);
     if (!skipToQuestions) timeline.push(downloadGate);
-    if (!skipToQuestions && !session.sticsa_pre_done) timeline.push(sticsaTrial("pre"));
+    // Questionnaires right before the film, each shown once (heights study: STICSA pre).
+    for (const page of questionnaire("before_film")) {
+      if (!skipToQuestions && !session[`${Questionnaires.pageKey(page)}_done`]) {
+        timeline.push(Questionnaires.makeOncePage(page, qctx));
+      }
+    }
 
     // Main film
     if (resumeFilm) {
@@ -709,8 +703,10 @@
       });
     }
 
-    // Post-STICSA immediately after playback, before any other question.
-    if (!session.sticsa_post_done) timeline.push(sticsaTrial("post"));
+    // Questionnaires immediately after playback, each shown once (heights study: STICSA post).
+    for (const page of questionnaire("after_film")) {
+      if (!session[`${Questionnaires.pageKey(page)}_done`]) timeline.push(Questionnaires.makeOncePage(page, qctx));
+    }
 
     // Post-film questions
     timeline.push({
@@ -718,141 +714,14 @@
       fullscreen_mode: false,
       delay_after: 0,
     });
-    // Same short questionnaire for both studies. Helps interpret the trajectory: negative +
-    // activated is not automatically anxiety (could be concern, disgust, anger, mixed excitement).
-    timeline.push({
-      type: jsPsychSurveyLikert,
-      preamble: "<h3>How you felt during the film</h3>",
-      questions: [
-        {
-          name: "anxiety_overall",
-          prompt: "Overall, how tense or anxious did you feel while watching the film?",
-          labels: likert7("Not at all", "Extremely"),
-          required: true,
-        },
-        {
-          name: "concern_safety",
-          prompt: "How concerned did you feel for the safety of the people in the film?",
-          labels: likert7("Not at all", "Extremely"),
-          required: true,
-        },
-        {
-          name: "body_intensity",
-          prompt: "How strong were any bodily sensations you felt while watching (for example sweaty palms, a racing heart, or tingling)?",
-          labels: likert7("None at all", "Very strong"),
-          required: true,
-        },
-      ],
-      data: { task: "post_feelings" },
-    });
-    timeline.push({
-      type: jsPsychSurveyMultiSelect,
-      questions: [
-        {
-          name: "body_sensations",
-          prompt: "Which bodily sensations, if any, did you notice while watching? (Select all that apply.)",
-          options: TEXTS.bodySensations,
-          required: true,
-        },
-      ],
-      data: { task: "post_body" },
-    });
-    // Rating-task interference (+ attention check 2)
-    timeline.push({
-      type: jsPsychSurveyLikert,
-      preamble: "<h3>About the rating task</h3>",
-      questions: [
-        {
-          name: "distracting",
-          prompt: "How much did rating your feelings distract you from watching the film?",
-          labels: likert7("Not at all", "Extremely"),
-          required: true,
-        },
-        {
-          name: "difficult",
-          prompt: `How difficult was it to use the ${isJoy ? "mouse control" : "slider"} to give your ratings?`,
-          labels: likert7("Not at all", "Extremely"),
-          required: true,
-        },
-        attentionItem(TEXTS.attentionCheck2),
-      ],
-      data: { page: "usability" },
-      on_finish: (d) => {
-        d.usability = d.response;
-        scoreAttention(d, [TEXTS.attentionCheck2]);
-      },
-    });
-    timeline.push({
-      type: jsPsychSurveyMultiChoice,
-      questions: [
-        { name: "seen_before", prompt: "Had you seen this film before?", options: ["Yes", "No", "Not sure"], required: true },
-        {
-          name: "full_attention",
-          prompt: "Did you watch the whole film without doing anything else at the same time? (Your answer does not affect your payment.)",
-          options: ["Yes", "Mostly", "No"],
-          required: true,
-        },
-        {
-          name: "input_device",
-          prompt: "What did you use to give your ratings?",
-          options: ["Mouse", "Trackpad / touchpad", "Other"],
-          required: true,
-        },
-      ],
-      data: { task: "post_mc" },
-    });
-    // Final free text, minimum word count enforced; pastes are counted.
-    let finalText = "";
-    let nKeys = 0;
-    let inputTypes = {}; // InputEvent.inputType counts: distinguishes typing, IME/dictation and other insertions
-    let ftAwayStart = 0;
-    const countWords = (t) => (t.trim().match(/\S+/g) || []).length;
-    timeline.push({
-      type: jsPsychHtmlButtonResponse,
-      stimulus: `<div class="text-page">${TEXTS.finalTextPrompt}
-        <textarea id="final-text" rows="10" style="width:100%;font-size:1em"></textarea>
-        <p class="muted" id="final-count">0 / ${TEXTS.finalTextMinWords} words</p></div>`,
-      choices: ["Continue"],
-      on_load: () => {
-        const ta = document.getElementById("final-text");
-        const cnt = document.getElementById("final-count");
-        const btn = document.querySelector("#jspsych-html-button-response-btngroup button");
-        const update = () => {
-          finalText = ta.value;
-          const n = countWords(finalText);
-          cnt.textContent = `${n} / ${TEXTS.finalTextMinWords} words`;
-          btn.disabled = n < TEXTS.finalTextMinWords;
-        };
-        ta.addEventListener("input", update);
-        ta.addEventListener("keydown", () => nKeys++);
-        ta.addEventListener("beforeinput", (ev) => {
-          const k = ev.inputType || "unknown";
-          inputTypes[k] = (inputTypes[k] || 0) + 1;
-        });
-        ta.addEventListener("compositionend", () => (inputTypes.compositionend = (inputTypes.compositionend || 0) + 1));
-        ftAwayStart = integrity.away_ms;
-        update();
-        ta.focus();
-      },
-      data: { task: "final_text" },
-      on_finish: (d) => {
-        d.text = finalText;
-        d.n_words = countWords(finalText);
-        d.n_chars = finalText.length;
-        d.n_keys = nKeys; // far fewer keystrokes than characters = text inserted, not typed
-        d.input_types = inputTypes;
-        d.away_ms = integrity.away_ms - ftAwayStart; // time spent in other windows while writing
-      },
-    });
-    timeline.push({
-      type: jsPsychSurveyText,
-      questions: [{ name: "feedback", prompt: TEXTS.feedbackPrompt, rows: 5, required: false }],
-      data: { task: "feedback" },
-    });
+    // Heights study: feelings, bodily sensations, rating task (+ attention check 2), seen before,
+    // written description, feedback.
+    for (const page of questionnaire("end")) timeline.push(Questionnaires.makePage(page, qctx));
+
 
     timeline.push({
       type: jsPsychHtmlButtonResponse,
-      stimulus: TEXTS.debrief(dim),
+      stimulus: fill(texts.debrief),
       choices: ["Finish and return to Prolific"],
       data: { task: "end" },
     });

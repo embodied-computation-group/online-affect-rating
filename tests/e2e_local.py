@@ -1,11 +1,14 @@
 """End-to-end smoke test of the task in local mode using installed Chrome (headless).
 
 Usage:
-  python tests/e2e_local.py [--input joystick|slider] [--reload] [--base URL]
+  python tests/e2e_local.py [--study heights-film] [--dim anxiety|affect2d] [--input joystick|slider] [--reload] [--base URL]
 
-Requires scripts/serve_local.sh running. The film starts near its end (start_time) so a run
-takes ~2 min. With --reload the page is reloaded mid-film to test resume. Writes the
-downloaded NDJSON to tests/out/ and prints a summary.
+Requires scripts/serve_local.sh running and the study's film in media/. The film starts near its end
+(start_time) so a run takes ~2 min. With --reload the page is reloaded mid-film to test resume. Writes the
+downloaded NDJSON to tests/out/ and prints a summary. The answers it gives follow the heights study's
+questionnaires (studies/heights-film); for another study, adapt the questionnaire steps.
+With --live (a JATOS study link), start_time only works if test mode is on: JATOS study properties ->
+Study input {"testMode": true}; otherwise the whole film plays.
 """
 import argparse, json, pathlib, time
 from playwright.sync_api import sync_playwright
@@ -15,6 +18,7 @@ ap.add_argument("--input", default="joystick", choices=["joystick", "slider"])
 ap.add_argument("--reload", action="store_true")
 ap.add_argument("--throttle-mbps", type=float, default=0, help="emulate a slow connection (Mbit/s)")
 ap.add_argument("--dim", default="anxiety", choices=["anxiety", "affect2d"])
+ap.add_argument("--study", default="heights-film", help="folder in studies/ (local runs)")
 ap.add_argument("--base", default="http://localhost:8000/task/index.html")
 ap.add_argument("--real-lock", action="store_true",
                 help="use Chrome's real Pointer Lock (captures the OS cursor while running!)")
@@ -23,7 +27,7 @@ a = ap.parse_args()
 
 START = 760 if a.reload else 795
 URL = (f"{a.base}?dim={a.dim}&input={a.input}&reset=1&PROLIFIC_PID=TESTPID&STUDY_ID=TESTSTUDY"
-       f"&SESSION_ID=TESTSESS&start_time={START}")
+       f"&SESSION_ID=TESTSESS&start_time={START}&study={a.study}")
 OUT = pathlib.Path(__file__).parent / "out"
 OUT.mkdir(exist_ok=True)
 VIEW = {"width": 1400, "height": 900}
@@ -162,6 +166,7 @@ with sync_playwright() as p:
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.goto(URL)
+    page.wait_for_function("() => window.CONFIG", timeout=30000)  # the study file has loaded
     px_full = page.evaluate("() => Math.round(screen.height * CONFIG.joystickFullScaleFrac)")
 
     assert page.get_by_role("button", name="I consent, begin the study").is_disabled()
