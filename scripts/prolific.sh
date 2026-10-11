@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wrapper: loads secrets.env, then runs the Prolific CLI.
 # Usage: scripts/prolific.sh whoami
-#        scripts/prolific.sh study create -t prolific/study.json
+#        scripts/prolific.sh study create -t prolific/generated/pilot_anxiety.json
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ ! -f "$ROOT/secrets.env" ]]; then

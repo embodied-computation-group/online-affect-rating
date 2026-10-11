@@ -1,8 +1,0 @@
-{
-  "filters": [
-    { "filter_id": "fluent-languages", "selected_values": ["19"] },
-    { "filter_id": "vision", "selected_values": ["0"] },
-    { "filter_id": "approval_rate", "selected_range": { "lower": 95, "upper": 100 } },
-    { "filter_id": "approval_numbers", "selected_range": { "lower": 20 } }
-  ]
-}
