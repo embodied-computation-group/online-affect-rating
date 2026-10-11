@@ -1,9 +1,12 @@
 """Fetch results and write a quality-control review.
 
-Usage (from the repo root):
-  python qc/review.py                 # fetch JATOS results + Prolific submissions, then review
-  python qc/review.py --no-fetch      # review what is already in data/raw
-  python qc/review.py --raw tests/out --no-fetch   # review local test runs
+Usage (from the repo root; --study is the study folder):
+  python qc/review.py --study studies/heights-film             # fetch JATOS results + Prolific submissions, review
+  python qc/review.py --study studies/heights-film --no-fetch  # review what is already in data/raw
+  python qc/review.py --study studies/heights-film --raw tests/out --no-fetch   # review local test runs
+
+The JATOS study (jatos.study_id) and the Prolific studies to download (prolific.studies) are in the study file;
+the JATOS address and the API tokens are in secrets.env.
 
 Outputs (gitignored; contain Prolific IDs):
   data/raw/jatos_<studyResultId>.ndjson      one file per JATOS study result
@@ -32,19 +35,10 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from qc_lib import FILM_DURATION_S, T, add_duplicate_text_flags, flags, load_session, session_metrics  # noqa: E402
+from qc_lib import add_duplicate_text_flags, flags, load_session, session_metrics  # noqa: E402
+from study_config import StudyFileError, dimension_axes, load_study  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-STUDY_UUID = "c4dff945-fbea-45df-9984-2856a87ed904"
-PROLIFIC_STUDIES = {
-    "pilot_anxiety": "6ac1d73ab02248cd4974b96c",
-    "pilot_affect2d": "6ac1d740c40e9350758dd8b4",
-    "main_c1": "6ac1ee01e5ff2d1969d03f93",
-    "main_c2": "6ac1ee0266279905720bd031",
-    "main_c3": "6ac1ee022838bc6b37c30c18",
-    "main_c4": "6ac21b0a039963bf6d587ce4",
-    "main_c5": "6ac23d7e47e222d973a7d77b",
-}
 
 
 def load_env() -> dict:
@@ -57,12 +51,21 @@ def load_env() -> dict:
 
 
 # ------------------------------------------------------------------------------- fetch ---
-def fetch_jatos(raw: Path, env: dict) -> int:
+def jatos_study_filter(study_id) -> dict:
+    """JATOS API filter for one study: a numeric id or a UUID."""
+    study_id = str(study_id)
+    return {"studyIds": [int(study_id)]} if study_id.isdigit() else {"studyUuids": [study_id]}
+
+
+def fetch_jatos(raw: Path, env: dict, study: dict) -> int:
+    study_id = (study.get("jatos") or {}).get("study_id") or env.get("JATOS_STUDY_ID")
+    if not study_id:
+        raise SystemExit("No JATOS study: set jatos.study_id in the study file")
     s = requests.Session()
     s.headers["Authorization"] = f"Bearer {env['JATOS_TOKEN']}"
     s.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))  # JATOS ignores the token with a cookie
     base = env["JATOS_URL"].rstrip("/") + "/jatos/api/v1"
-    md = s.post(f"{base}/results/metadata", json={"studyUuids": [STUDY_UUID]}, timeout=60).json()["data"]
+    md = s.post(f"{base}/results/metadata", json=jatos_study_filter(study_id), timeout=60).json()["data"]
     results = [r for st in md for r in st["studyResults"]]
     for r in results:
         d = s.post(f"{base}/results/data", params={"asPlainText": "true"}, json={"studyResultIds": [r["id"]]}, timeout=120)
@@ -72,24 +75,24 @@ def fetch_jatos(raw: Path, env: dict) -> int:
     return len(results)
 
 
-def fetch_prolific(raw: Path, env: dict) -> pd.DataFrame:
+def fetch_prolific(raw: Path, env: dict, study: dict) -> pd.DataFrame:
     cli = shutil.which("prolific") or str(ROOT / "bin" / ("prolific.exe" if os.name == "nt" else "prolific"))
     penv = dict(os.environ, PROLIFIC_TOKEN=env.get("PROLIFIC_TOKEN", ""))
     rows = []
-    for study, sid in PROLIFIC_STUDIES.items():
+    for name, sid in (study["prolific"].get("studies") or {}).items():
         out = subprocess.run([cli, "submission", "list", "-s", sid, "-j"], capture_output=True, text=True,
                              encoding="utf8", env=penv, timeout=120)
         try:
             data = json.loads(out.stdout)
         except json.JSONDecodeError:
-            print(f"  could not read Prolific submissions for {study}: {out.stderr.strip()[:200]}")
+            print(f"  could not read Prolific submissions for {name}: {out.stderr.strip()[:200]}")
             continue
         (raw / f"prolific_{sid}.json").write_text(json.dumps(data, indent=1), encoding="utf8")
         subs = data.get("results", data) if isinstance(data, dict) else data
         for x in subs or []:
             rows.append({"prolific_pid": x.get("participant_id") or x.get("participant"),
                          "prolific_status": x.get("status"), "prolific_time_taken_s": x.get("time_taken"),
-                         "prolific_submission_id": x.get("id"), "prolific_study": study})
+                         "prolific_submission_id": x.get("id"), "prolific_study": name})
     return pd.DataFrame(rows)
 
 
@@ -105,7 +108,9 @@ def save_fig(fig, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_session(s, r: dict, out: Path) -> None:
+def plot_session(s, r: dict, out: Path, study: dict) -> None:
+    T = study["qc"]["thresholds"]
+    film_s = study["film"]["duration_s"]
     fs, fi, fe = s.film_samples, s.film_inputs, s.film_events
     fig, ax = plt.subplots(3, 1, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [3, 2, 1]})
     if not fs.empty:
@@ -114,7 +119,7 @@ def plot_session(s, r: dict, out: Path) -> None:
             ax[0].plot(fs["t_stim"], fs["value_y"], lw=1, label="arousal (y)")
             ax[0].legend(loc="upper right", fontsize=8)
         else:
-            ax[0].plot(fs["t_stim"], fs["value"], lw=1, color="C3", label="anxiety")
+            ax[0].plot(fs["t_stim"], fs["value"], lw=1, color="C3", label=s.dimension)
         notplay = fs[fs["playing"] == 0]
         ax[0].scatter(notplay["t_stim"], np.full(len(notplay), -4), s=2, color="grey", label="not playing")
     if not fe.empty and "e" in fe:
@@ -133,11 +138,11 @@ def plot_session(s, r: dict, out: Path) -> None:
     ax[1].set_ylabel("raw mouse step (px)")
 
     if not fi.empty:
-        bins = np.arange(0, FILM_DURATION_S + 5, 5)
+        bins = np.arange(0, film_s + 5, 5)
         ax[2].hist(fi["t_stim"].astype(float), bins=bins, color="C0")
     ax[2].set_ylabel("inputs / 5 s")
     ax[2].set_xlabel("film time (s)")
-    ax[2].set_xlim(0, FILM_DURATION_S)
+    ax[2].set_xlim(0, film_s)
     reasons = r["reject_reasons"] + r["review_reasons"]
     if reasons:
         fig.text(0.01, 0.005, "; ".join(reasons)[:220], fontsize=8, color="darkred")
@@ -145,11 +150,13 @@ def plot_session(s, r: dict, out: Path) -> None:
     save_fig(fig, out)
 
 
-def plot_overview(sessions, rows, out: Path) -> None:
-    """Quick sanity overview per study: every participant's trajectory + mean (not an analysis)."""
-    grid = np.arange(0, FILM_DURATION_S, 0.5)
-    for study, cols in (("anxiety", ["value"]), ("affect2d", ["value_x", "value_y"])):
-        ss = [(s, r) for s, r in zip(sessions, rows) if r["study"] == study and not s.film_samples.empty]
+def plot_overview(sessions, rows, out: Path, study: dict) -> None:
+    """Quick sanity overview per rating dimension: every participant's trajectory + mean (not an analysis)."""
+    film_s = study["film"]["duration_s"]
+    grid = np.arange(0, film_s, 0.5)
+    for dim in study["rating"]["dimensions"]:
+        cols = ["value_x", "value_y"] if dimension_axes(study, dim) == 2 else ["value"]
+        ss = [(s, r) for s, r in zip(sessions, rows) if r["study"] == dim and not s.film_samples.empty]
         if not ss:
             continue
         fig, axes = plt.subplots(len(cols), 1, figsize=(12, 3.2 * len(cols)), squeeze=False)
@@ -167,22 +174,27 @@ def plot_overview(sessions, rows, out: Path) -> None:
                     ax.plot(grid, np.nanmean(np.vstack(curves), axis=0), color="k", lw=2, label="mean")
             ax.set_ylabel(col)
             ax.set_ylim(-2, 102)
-            ax.set_xlim(0, FILM_DURATION_S)
+            ax.set_xlim(0, film_s)
             ax.legend(fontsize=7, loc="upper right", ncol=2)
         axes[-1, 0].set_xlabel("film time (s)")
-        axes[0, 0].set_title(f"{study}: n={len(ss)}", loc="left", fontsize=10)
+        axes[0, 0].set_title(f"{dim}: n={len(ss)}", loc="left", fontsize=10)
         fig.tight_layout()
-        save_fig(fig, out / f"overview_{study}.png")
+        save_fig(fig, out / f"overview_{dim}.png")
 
 
 # -------------------------------------------------------------------------------- main ---
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--study", required=True, help="study folder, e.g. studies/heights-film")
     ap.add_argument("--raw", default=str(ROOT / "data" / "raw"))
     ap.add_argument("--out", default=str(ROOT / "qc" / "out"))
     ap.add_argument("--no-fetch", action="store_true")
     ap.add_argument("--include-tests", action="store_true", help="keep sessions with PROLIFIC_PID=TESTPID")
     a = ap.parse_args()
+    try:
+        study = load_study(a.study)
+    except StudyFileError as err:
+        sys.exit(str(err))
     raw, out = Path(a.raw), Path(a.out)
     raw.mkdir(parents=True, exist_ok=True)
     (out / "plots").mkdir(parents=True, exist_ok=True)
@@ -190,23 +202,23 @@ def main() -> None:
     prol = pd.DataFrame()
     if not a.no_fetch:
         env = load_env()
-        print(f"fetched {fetch_jatos(raw, env)} JATOS results")
-        prol = fetch_prolific(raw, env)
+        print(f"fetched {fetch_jatos(raw, env, study)} JATOS results")
+        prol = fetch_prolific(raw, env, study)
         print(f"fetched {len(prol)} Prolific submissions")
 
     files = sorted(p for p in raw.glob("*.ndjson"))
-    sessions = [load_session(p) for p in files]
+    sessions = [load_session(p, study) for p in files]
     sessions = [s for s in sessions if s.meta and (a.include_tests or s.pid != "TESTPID" or "tests" in str(raw))]
     if not sessions:
         print("no sessions to review")
         return
-    rows = [session_metrics(s) for s in sessions]
-    add_duplicate_text_flags(rows)
+    rows = [session_metrics(s, study) for s in sessions]
+    add_duplicate_text_flags(rows, study)
     for r in rows:
-        r["verdict"], r["reject_reasons"], r["review_reasons"] = flags(r)
+        r["verdict"], r["reject_reasons"], r["review_reasons"] = flags(r, study)
     for s, r in zip(sessions, rows):
-        plot_session(s, r, out / "plots" / f"{r['prolific_pid']}_{r['study']}_{r['file'].split('.')[0]}.png")
-    plot_overview(sessions, rows, out)
+        plot_session(s, r, out / "plots" / f"{r['prolific_pid']}_{r['study']}_{r['file'].split('.')[0]}.png", study)
+    plot_overview(sessions, rows, out, study)
 
     df = pd.DataFrame(rows)
     df["reject_reasons"] = df["reject_reasons"].map("; ".join)

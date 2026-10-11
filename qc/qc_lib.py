@@ -7,6 +7,10 @@ group means and fMRI regressors belong in the separate analysis repository; the 
 A result file is newline-delimited JSON as written by task/js/experiment.js (JATOS result data, or the
 NDJSON downloaded in local mode). Rating data are rebuilt from `chunk` lines, which survive reloads;
 questionnaires come from `trial` lines (also reload-safe) and the `final` line when present.
+
+Study-specific settings (film length, thresholds, questionnaire names, which dimensions are 2D) come from the
+study file: pass `study = study_config.load_study("studies/<name>")` to the functions below. The advisory
+thresholds are in the study file under qc.thresholds.
 """
 from __future__ import annotations
 
@@ -20,56 +24,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-FILM_DURATION_S = 808.9
-
-# Exploratory vs confirmatory samples (docs/preregistration.md). Exploratory = pilot + main-run cohort 1; every
-# later Prolific study is confirmatory. Exploratory scripts default to the exploratory sample so confirmatory data
-# are not looked at before the registered analysis; pass --confirmatory or --all explicitly to change that.
-EXPLORATORY_STUDIES = {
-    "6ac1d73ab02248cd4974b96c",  # pilot, Study 1 (anxiety)
-    "6ac1d740c40e9350758dd8b4",  # pilot, Study 2 (affect2d)
-    "6ac1ee01e5ff2d1969d03f93",  # main run cohort 1
-}
+from study_config import SLOTS, dimension_axes, scale_pages
 
 
-def scope_filter(rep, argv=None):
-    """Restrict a qc_report DataFrame to the requested sample: exploratory (default), --confirmatory or --all."""
-    import sys as _sys
-    argv = _sys.argv if argv is None else argv
-    if "--all" in argv:
+def scope_filter(rep, study: dict, scope: str = "exploratory"):
+    """Restrict a qc_report DataFrame to a sample: "exploratory" (default), "confirmatory" or "all".
+
+    The exploratory Prolific studies are listed in the study file (qc.exploratory_studies); every other real
+    Prolific study is confirmatory. Scripts default to the exploratory sample so confirmatory data are not looked
+    at before the registered analysis. A study without that list has no split: every real session is used.
+    """
+    if scope == "all":
         return rep
     if "prolific_study_id" not in rep:
         raise SystemExit("qc_report.csv lacks prolific_study_id - rerun qc/review.py")
-    expl = rep["prolific_study_id"].isin(EXPLORATORY_STUDIES)
     real = rep["prolific_study_id"].fillna("").str.fullmatch(r"[0-9a-f]{24}")  # drops local/test sessions
-    return rep[real & ~expl] if "--confirmatory" in argv else rep[expl]
-
-# ---------------------------------------------------------------- thresholds (advisory) ---
-T = {
-    "teleport_px": 250,  # single raw mouse event larger than this ...
-    "teleport_isolation_ms": 100,  # ... with no other mouse event within this time either side = "teleport"
-    "stalled_s_review": 30,  # total buffering time during the film
-    "teleport_count_review": 3,
-    "identical_run_review": 30,  # consecutive identical (dx, dy) mouse deltas ...
-    "identical_min_px": 3,  # ... counting only steps of at least this size (slow hands give runs of 1-2 px steps)
-    "big_step_frac_review": 0.10,  # > this fraction of film mouse steps > teleport_px: erratic input. Cause unknown
-                                   # (cohort 1 case practised normally, so not simply an incompatible device)
-    "pure_axis_review": 0.98,  # fraction of moving events with an exactly-zero off-axis component
-    "pure_axis_min_events": 200,
-    "coverage_min": 0.95,  # fraction of the film with playing samples
-    "interruptions_review": 3,
-    "interrupted_s_review": 60,
-    "no_input_s_review": 180,  # longest stretch of film without any rating input
-    "away_s_review": 120,  # total time the window was unfocused/hidden
-    "practice_mae_review": 15,  # after the repeat; 2D threshold is 20
-    "practice_err2d_review": 20,
-    "quadrant_min": 3,  # of 6
-    "text_keys_per_char_reject": 0.2,  # typed far fewer keys than characters -> text was inserted
-    "text_min_chars_for_key_check": 200,
-    "typing_cpm_review": 700,  # characters per minute over the whole text page
-    "ai_markers_review": 2,
-    "duplicate_text_ratio": 0.8,
-}
+    exploratory_ids = study["qc"].get("exploratory_studies")
+    if not exploratory_ids:
+        return rep[real]
+    expl = rep["prolific_study_id"].isin(set(exploratory_ids))
+    return rep[real & ~expl] if scope == "confirmatory" else rep[expl]
 
 # Phrases/characters that are common in LLM output and rare in quick participant prose. Advisory only:
 # a hit is a reason to read the text, never evidence by itself.
@@ -91,6 +65,7 @@ class Session:
     film_inputs: pd.DataFrame | None = None
     film_events: pd.DataFrame | None = None
     practice: list[dict] = field(default_factory=list)  # practice trial dicts (scalars only)
+    axes: int = 1  # 1 = one rating scale, 2 = 2D grid (from the study file)
 
     @property
     def m(self) -> dict:
@@ -106,7 +81,7 @@ class Session:
 
     @property
     def is2d(self) -> bool:
-        return self.dimension == "affect2d"
+        return self.axes == 2
 
     def trial(self, task: str, **kw) -> list[dict]:
         out = [t for t in self.trials if t.get("task") == task]
@@ -122,7 +97,8 @@ def _rows_to_df(rows: list[list], cols: list[str]) -> pd.DataFrame:
     return pd.DataFrame([(list(r) + [None] * n)[:n] for r in rows], columns=cols)
 
 
-def load_session(path: str | Path) -> Session:
+def load_session(path: str | Path, study: dict) -> Session:
+    """Read one result file. `study` (the study file) says which rating dimensions are 2D."""
     path = Path(path)
     s = Session(path)
     chunks = []
@@ -158,6 +134,8 @@ def load_session(path: str | Path) -> Session:
                   for t in final_trials if t.get("task") == "practice"]
 
     # Film rating data from chunks (tags "film", "film_resume_<n>").
+    if s.dimension in study["rating"]["dimensions"]:
+        s.axes = dimension_axes(study, s.dimension)
     is2d = s.is2d
     vcols = ["value_x", "value_y"] if is2d else ["value"]
     scols = ["t_stim", "t_frame", "t_wall", *vcols, "playing"]
@@ -238,14 +216,15 @@ def _interrupted_s(events: pd.DataFrame) -> float:
     return total
 
 
-def _coverage(samples: pd.DataFrame) -> float:
+def _coverage(samples: pd.DataFrame, film_duration_s: float) -> float:
+    """Share of the film's whole seconds with at least one playing sample."""
     if samples.empty:
         return 0.0
     t = samples.loc[samples["playing"] == 1, "t_stim"].to_numpy(dtype=float)
     if t.size == 0:
         return 0.0
     covered = np.unique(np.floor(t)).size  # seconds of film with at least one playing sample
-    return min(1.0, covered / math.floor(FILM_DURATION_S))
+    return min(1.0, covered / math.floor(film_duration_s))
 
 
 def ai_marker_hits(text: str) -> list[str]:
@@ -253,7 +232,20 @@ def ai_marker_hits(text: str) -> list[str]:
     return [m for m in AI_MARKERS if re.search(m, tl)]
 
 
-def session_metrics(s: Session) -> dict:
+def _pages(study: dict, types: tuple, slots=SLOTS) -> list[dict]:
+    """Questionnaire pages of the given types in the given places of the session, in order."""
+    q = study["questionnaires"]
+    return [p for slot in slots for p in (q.get(slot) or []) if p["type"] in types]
+
+
+def _page_trials(s: Session, name: str) -> list[dict]:
+    """The saved trials of a questionnaire page (pages with an attention check are saved as task "attention")."""
+    return [t for t in s.trials if t.get("task") == name or (t.get("task") == "attention" and t.get("page") == name)]
+
+
+def session_metrics(s: Session, study: dict) -> dict:
+    """All QC measures of one session, as one report row."""
+    T = study["qc"]["thresholds"]
     sm = (s.final or {}).get("summary", {}) or {}
     integ = (s.final or {}).get("integrity", {}) or {}
     r: dict = {
@@ -281,7 +273,7 @@ def session_metrics(s: Session) -> dict:
 
     # film coverage / interruptions
     fs, fi, fe = s.film_samples, s.film_inputs, s.film_events
-    r["coverage"] = round(_coverage(fs), 3)
+    r["coverage"] = round(_coverage(fs, study["film"]["duration_s"]), 3)
     evn = fe["e"] if not fe.empty and "e" in fe else pd.Series(dtype=str)
     r["n_interruptions"] = int((evn == "interrupt").sum())
     r["n_stalls"] = int((evn == "stall").sum())
@@ -331,26 +323,30 @@ def session_metrics(s: Session) -> dict:
         r["frac_pure_axis"] = None
     r["untrusted_events"] = sm.get("film_untrusted_events")
 
-    # STICSA
-    for tp in ("pre", "post"):
-        st = s.trial("sticsa", timepoint=tp)
-        r[f"sticsa_{tp}"] = st[-1].get("total") if st else None
-        r[f"sticsa_{tp}_straightline"] = (len({i["response"] for i in st[-1]["items"]}) == 1) if st else None
-    r["sticsa_change"] = (r["sticsa_post"] - r["sticsa_pre"]) if None not in (r["sticsa_pre"], r["sticsa_post"]) else None
+    # Scale questionnaires (e.g. STICSA pre/post): total, all-same-answer flag, and post - pre change
+    timepoints = {}
+    for page in scale_pages(study):
+        timepoints.setdefault(page["scale"], []).append(page.get("timepoint"))
+    for name, tps in timepoints.items():
+        for tp in tps:
+            col = f"{name}_{tp}" if tp else name
+            st = s.trial(name, timepoint=tp) if tp else s.trial(name)
+            r[col] = st[-1].get("total") if st else None
+            r[f"{col}_straightline"] = (len({i["response"] for i in st[-1]["items"]}) == 1) if st else None
+        if "pre" in tps and "post" in tps:
+            pre, post = r[f"{name}_pre"], r[f"{name}_post"]
+            r[f"{name}_change"] = (post - pre) if None not in (pre, post) else None
 
-    # post questions
-    pf = s.trial("post_feelings")
-    if pf:
-        r.update({f"q_{k}": v for k, v in (pf[-1].get("response") or {}).items()})
-    us = [t for t in s.trials if t.get("usability")]
-    if us:
-        r.update({f"q_{k}": v for k, v in us[-1]["usability"].items()})
-    mc = s.trial("post_mc")
-    if mc:
-        r.update({f"q_{k}": v for k, v in (mc[-1].get("response") or {}).items()})
+    # Answers to the post-film likert and multiple-choice pages, as q_<question name> columns
+    for page in _pages(study, ("likert", "multi_choice"), slots=("after_film", "end")):
+        saved = _page_trials(s, page["name"])
+        if saved:
+            r.update({f"q_{k}": v for k, v in (saved[-1].get("response") or {}).items()})
 
-    # free text
-    ft = s.trial("final_text")
+    # free text (the first free_text page of the study)
+    text_pages = _pages(study, ("free_text",))
+    text_name = text_pages[0]["name"] if text_pages else None
+    ft = s.trial(text_name) if text_name else []
     text = ft[-1].get("text", "") if ft else ""
     r["text"] = text
     r["text_words"] = ft[-1].get("n_words") if ft else None
@@ -362,17 +358,24 @@ def session_metrics(s: Session) -> dict:
     r["text_cpm"] = round(r["text_chars"] / rt_min) if ft and rt_min > 0 else None
     r["text_away_s"] = round((ft[-1].get("away_ms") or 0) / 1000, 1) if ft else None
     r["text_input_types"] = json.dumps(ft[-1].get("input_types")) if ft and ft[-1].get("input_types") else ""
-    tev = [e for e in integ.get("events", []) if e.get("task") == "final_text"]
+    tev = [e for e in integ.get("events", []) if text_name and e.get("task") == text_name]
     r["text_paste_drop_attempts"] = sum(e.get("e") in ("paste_blocked", "drop_blocked", "insert_blocked") for e in tev)
     r["paste_blocked"] = integ.get("paste_blocked", sm.get("paste_blocked"))
     r["copy_blocked"] = integ.get("copy_blocked", sm.get("copy_blocked"))
     r["ai_markers"] = ";".join(ai_marker_hits(text)) if text else ""
-    fb = s.trial("feedback")
-    r["feedback"] = ((fb[-1].get("response") or {}).get("feedback") or "") if fb else ""
+
+    # feedback: the answer to the first question of the first "text" page
+    fb_pages = _pages(study, ("text",))
+    fb_page = fb_pages[0] if fb_pages else None
+    fb = s.trial(fb_page["name"]) if fb_page else []
+    fb_question = fb_page["questions"][0]["name"] if fb_page else None
+    r["feedback"] = ((fb[-1].get("response") or {}).get(fb_question) or "") if fb else ""
     return r
 
 
-def add_duplicate_text_flags(rows: list[dict]) -> None:
+def add_duplicate_text_flags(rows: list[dict], study: dict) -> None:
+    """Add each session's highest text similarity to another session (and who, above the threshold)."""
+    T = study["qc"]["thresholds"]
     for i, a in enumerate(rows):
         best, who = 0.0, None
         for j, b in enumerate(rows):
@@ -385,12 +388,15 @@ def add_duplicate_text_flags(rows: list[dict]) -> None:
         a["text_most_similar_to"] = who if best >= T["duplicate_text_ratio"] else ""
 
 
-def flags(r: dict) -> tuple[str, list[str], list[str]]:
-    """Return (verdict, reject_reasons, review_reasons). Verdicts are advisory."""
+def flags(r: dict, study: dict) -> tuple[str, list[str], list[str]]:
+    """Return (verdict, reject_reasons, review_reasons) for a report row. Verdicts are advisory.
+    Thresholds come from the study file (qc.thresholds, qc.review_answers)."""
+    T = study["qc"]["thresholds"]
     rej, rev = [], []
     # Objective evidence (Prolific: rejection needs clear evidence the terms were broken)
-    if r.get("att_failed", 0) >= 2:
-        rej.append("failed both attention checks")
+    att_reject = T["attention_failed_reject"]
+    if r.get("att_failed", 0) >= att_reject:
+        rej.append("failed both attention checks" if att_reject == 2 else f"failed {r['att_failed']} attention checks")
     if (r.get("untrusted_events") or 0) > 0:
         rej.append(f"{r['untrusted_events']} script-generated input events")
     if (r.get("text_chars") or 0) >= T["text_min_chars_for_key_check"] and r.get("text_keys_per_char") is not None \
@@ -422,8 +428,9 @@ def flags(r: dict) -> tuple[str, list[str], list[str]]:
         rev.append(f"{r.get('copy_blocked') or 0} copy / {r.get('paste_blocked') or 0} paste attempts (blocked)"
                    + (f", {r['text_away_s']:.0f} s away while writing" if (r.get("text_away_s") or 0) > 10 else ""))
     # Engagement / attention (exclusion candidates, not rejection)
-    if r.get("att_failed") == 1:
-        rev.append("failed 1 attention check")
+    n_failed = r.get("att_failed") or 0
+    if 0 < n_failed < att_reject:
+        rev.append(f"failed {n_failed} attention check" + ("s" if n_failed > 1 else ""))
     if r.get("coverage", 1) < T["coverage_min"]:
         rev.append(f"film coverage {r['coverage']:.0%}")
     if r.get("n_interruptions", 0) > T["interruptions_review"] or (r.get("interrupted_s") or 0) > T["interrupted_s_review"]:
@@ -434,15 +441,16 @@ def flags(r: dict) -> tuple[str, list[str], list[str]]:
         rev.append(f"no rating input for {r['longest_no_input_s']:.0f} s")
     if (r.get("away_s_total") or 0) > T["away_s_review"]:
         rev.append(f"away from the window {r['away_s_total']:.0f} s")
-    thr = T["practice_err2d_review"] if r.get("study") == "affect2d" else T["practice_mae_review"]
+    dims = study["rating"]["dimensions"]
+    is2d = r.get("study") in dims and dimension_axes(study, r["study"]) == 2
+    thr = T["practice_err2d_review"] if is2d else T["practice_mae_review"]
     if r.get("practice_err_last") is not None and r["practice_err_last"] > thr:
         rev.append(f"practice error {r['practice_err_last']} after {r['practice_runs']} runs")
     if r.get("quadrant_correct") is not None and r["quadrant_correct"] < T["quadrant_min"]:
         rev.append(f"quadrant practice {r['quadrant_correct']}/6")
-    if r.get("q_seen_before") == "Yes":
-        rev.append("had seen the film")
-    if r.get("q_full_attention") == "No":
-        rev.append("reports not watching attentively")
+    for rule in study["qc"].get("review_answers") or []:  # e.g. had seen the film before
+        if r.get(f"q_{rule['question']}") == rule["answer"]:
+            rev.append(rule["reason"])
     if r.get("n_loads", 1) > 1:
         rev.append(f"{r['n_loads']} page loads")
     if not r.get("completed"):
@@ -451,25 +459,30 @@ def flags(r: dict) -> tuple[str, list[str], list[str]]:
     return verdict, rej, rev
 
 
-def prereg_hard_exclusion(r) -> str:
-    """Preregistered hard exclusions (docs/preregistration.md, 'Data inclusion and exclusion', rules 1-7), applied
-    exactly as written. Returns '' if included, else the reasons. Takes a qc_report row (dict or Series)."""
+def prereg_hard_exclusion(r, study: dict) -> str:
+    """The study's preregistered hard exclusions (study file: qc.hard_exclusions; for the heights study the
+    preregistration's 'Data inclusion and exclusion' rules 1-7), applied exactly as written.
+    Returns '' if included, else the reasons. Takes a qc_report row (dict or Series), e.g.
+    rep.apply(lambda row: prereg_hard_exclusion(row, study), axis=1)."""
+    x = study["qc"]["hard_exclusions"]
     g = (lambda k: r.get(k)) if hasattr(r, "get") else (lambda k: getattr(r, k, None))
     num = lambda k: (g(k) if g(k) is not None and g(k) == g(k) else 0)  # noqa: E731  (NaN -> 0)
     w = []
-    if num("att_failed") >= 2:
-        w.append("both attention checks failed")
+    if num("att_failed") >= x["attention_failed_at_least"]:
+        n = x["attention_failed_at_least"]
+        w.append("both attention checks failed" if n == 2 else f"{n} or more attention checks failed")
     if num("untrusted_events") > 0:
         w.append("script-generated input")
     kpc = g("text_keys_per_char")
-    if kpc is not None and kpc == kpc and num("text_chars") >= 200 and kpc < 0.2:
+    if kpc is not None and kpc == kpc and num("text_chars") >= x["text_min_chars"] and kpc < x["text_keys_per_char_below"]:
         w.append("free text not typed")
-    if num("frac_big_steps") > 0.10:
+    if num("frac_big_steps") > x["big_step_frac_above"]:
         w.append("erratic input")
-    if num("stalled_s") > 30 or num("interrupted_s") > 60:
+    if num("stalled_s") > x["stalled_s_above"] or num("interrupted_s") > x["interrupted_s_above"]:
         w.append("disrupted viewing")
-    if num("coverage") < 0.95:
-        w.append("film coverage < 95%")
-    if g("q_seen_before") == "Yes":
-        w.append("seen the film before")
+    if num("coverage") < x["coverage_below"]:
+        w.append(f"film coverage < {x['coverage_below']:.0%}")
+    for rule in x.get("answers") or []:  # e.g. had seen the film before
+        if g(f"q_{rule['question']}") == rule["answer"]:
+            w.append(rule["reason"])
     return "; ".join(w)

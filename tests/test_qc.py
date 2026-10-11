@@ -1,8 +1,10 @@
 """Known-answer tests for the quality-control library (qc/qc_lib.py).
 
-Every test uses small made-up data whose correct answer can be worked out by hand.
+Every test uses small made-up data whose correct answer can be worked out by hand. Study settings
+(film length, thresholds, questionnaire names) come from the heights example study file.
 Run from the repository folder:  python -m pytest tests
 """
+import copy
 import json
 import math
 
@@ -12,7 +14,10 @@ import pytest
 
 import qc_lib
 from qc_lib import (add_duplicate_text_flags, ai_marker_hits, flags, load_session, prereg_hard_exclusion,
-                    session_metrics)
+                    scope_filter, session_metrics)
+from study_config import ROOT, load_study
+
+STUDY = load_study(ROOT / "studies" / "heights-film")
 
 
 # ----------------------------------------------------------------------------- helpers ---
@@ -22,9 +27,19 @@ def write_ndjson(path, lines):
     return path
 
 
+def run_flags(row):
+    """The advisory flags for a report row, with the heights thresholds."""
+    return flags(row, STUDY)
+
+
+def metrics_of(session):
+    """The QC measures of a session, with the heights study settings."""
+    return session_metrics(session, STUDY)
+
+
 def ok_row(**changes):
     """A qc_report row for a clean, completed session; `changes` overrides single fields."""
-    row = {"completed": True, "coverage": 1.0, "study": "anxiety", "n_loads": 1, "att_failed": 0}
+    row = {"completed": True, "coverage": 1.0, "study": "anxiety", "n_loads": 1, "att_failed": 0, "att_total": 2}
     row.update(changes)
     return row
 
@@ -43,7 +58,9 @@ def test_coverage_is_share_of_whole_film_seconds_with_playing_samples():
     samples = pd.DataFrame({"t_stim": t, "playing": 1})
     # samples that were not playing do not count
     paused = pd.DataFrame({"t_stim": np.arange(500, 600, 0.5), "playing": 0})
-    assert qc_lib._coverage(pd.concat([samples, paused])) == pytest.approx(404 / 808)
+    assert qc_lib._coverage(pd.concat([samples, paused]), 808.9) == pytest.approx(404 / 808)
+    # a 404.2-s film is fully covered by the same samples
+    assert qc_lib._coverage(samples, 404.2) == 1.0
 
 
 def test_interrupted_seconds_pairs_interrupt_with_resume_or_end():
@@ -84,7 +101,7 @@ def test_duplicate_text_flags_name_the_most_similar_participant():
     rows = [{"prolific_pid": "A", "text": "I felt very scared on the roof."},
             {"prolific_pid": "B", "text": "I felt very scared on the roof!"},
             {"prolific_pid": "C", "text": "Completely different words here about nothing."}]
-    add_duplicate_text_flags(rows)
+    add_duplicate_text_flags(rows, STUDY)
     assert rows[0]["text_most_similar_to"] == "B"
     assert rows[1]["text_most_similar_to"] == "A"
     assert rows[2]["text_most_similar_to"] == ""
@@ -92,37 +109,37 @@ def test_duplicate_text_flags_name_the_most_similar_participant():
 
 # --------------------------------------------------------------------------------- flags ---
 def test_clean_session_is_ok():
-    assert flags(ok_row()) == ("OK", [], [])
+    assert run_flags(ok_row()) == ("OK", [], [])
 
 
 def test_both_attention_checks_failed_is_reject_eligible():
-    verdict, rej, _ = flags(ok_row(att_failed=2))
+    verdict, rej, _ = run_flags(ok_row(att_failed=2))
     assert verdict == "REJECT-ELIGIBLE"
     assert rej == ["failed both attention checks"]
 
 
 def test_one_attention_check_failed_is_review_only():
-    verdict, rej, rev = flags(ok_row(att_failed=1))
+    verdict, rej, rev = run_flags(ok_row(att_failed=1))
     assert (verdict, rej, rev) == ("REVIEW", [], ["failed 1 attention check"])
 
 
 def test_untyped_text_is_reject_eligible_only_with_paste_attempts_or_time_away():
     untyped = dict(text_chars=300, text_keys=30, text_keys_per_char=0.1)
-    verdict, rej, rev = flags(ok_row(**untyped))  # possibly dictation
+    verdict, rej, rev = run_flags(ok_row(**untyped))  # possibly dictation
     assert verdict == "REVIEW" and rej == [] and "possibly dictation" in rev[0]
-    verdict, rej, _ = flags(ok_row(**untyped, text_paste_drop_attempts=1))
+    verdict, rej, _ = run_flags(ok_row(**untyped, text_paste_drop_attempts=1))
     assert verdict == "REJECT-ELIGIBLE" and "after paste/drop attempts" in rej[0]
 
 
 def test_practice_threshold_depends_on_the_number_of_rating_axes():
     # error 18 passes the 2D threshold (20) but not the 1D threshold (15)
-    assert flags(ok_row(study="affect2d", practice_err_last=18, practice_runs=2))[0] == "OK"
-    verdict, _, rev = flags(ok_row(study="anxiety", practice_err_last=18, practice_runs=2))
+    assert run_flags(ok_row(study="affect2d", practice_err_last=18, practice_runs=2))[0] == "OK"
+    verdict, _, rev = run_flags(ok_row(study="anxiety", practice_err_last=18, practice_runs=2))
     assert verdict == "REVIEW" and rev == ["practice error 18 after 2 runs"]
 
 
 def test_low_coverage_and_seen_before_are_review_reasons():
-    _, _, rev = flags(ok_row(coverage=0.9, q_seen_before="Yes"))
+    _, _, rev = run_flags(ok_row(coverage=0.9, q_seen_before="Yes"))
     assert rev == ["film coverage 90%", "had seen the film"]
 
 
@@ -145,7 +162,7 @@ def test_low_coverage_and_seen_before_are_review_reasons():
 def test_prereg_hard_exclusion(changes, expected):
     row = {"att_failed": 0, "untrusted_events": 0, "coverage": 1.0, "stalled_s": 0, "interrupted_s": 0}
     row.update(changes)
-    assert prereg_hard_exclusion(row) == expected
+    assert prereg_hard_exclusion(row, STUDY) == expected
 
 
 def test_prereg_hard_exclusion_treats_missing_values_as_zero():
@@ -153,7 +170,7 @@ def test_prereg_hard_exclusion_treats_missing_values_as_zero():
     row = pd.Series({"att_failed": 0, "untrusted_events": np.nan, "text_keys_per_char": np.nan,
                      "text_chars": np.nan, "frac_big_steps": np.nan, "stalled_s": 0, "interrupted_s": 0,
                      "coverage": 1.0, "q_seen_before": "No"})
-    assert prereg_hard_exclusion(row) == ""
+    assert prereg_hard_exclusion(row, STUDY) == ""
 
 
 # -------------------------------------------------------------------------- load_session ---
@@ -196,7 +213,7 @@ def small_session_lines():
 
 
 def test_load_session_rebuilds_film_data_and_deduplicates_trials(tmp_path):
-    s = load_session(write_ndjson(tmp_path / "s.ndjson", small_session_lines()))
+    s = load_session(write_ndjson(tmp_path / "s.ndjson", small_session_lines()), STUDY)
     assert s.pid == "P1" and s.dimension == "anxiety" and not s.is2d
     assert list(s.film_samples["t_stim"]) == [0.0, 0.05, 0.10]       # practice chunk ignored
     assert s.film_samples["t_frame"].isna().tolist() == [True, False, False]  # old row gets t_frame = None
@@ -207,7 +224,7 @@ def test_load_session_rebuilds_film_data_and_deduplicates_trials(tmp_path):
 
 
 def test_session_metrics_on_small_session(tmp_path):
-    r = session_metrics(load_session(write_ndjson(tmp_path / "s.ndjson", small_session_lines())))
+    r = metrics_of(load_session(write_ndjson(tmp_path / "s.ndjson", small_session_lines()), STUDY))
     assert r["completed"] is True and r["consent"] is True
     assert (r["att_failed"], r["att_total"]) == (1, 2)
     assert r["practice_err_last"] == 7.5 and r["practice_runs"] == 1
@@ -268,15 +285,15 @@ def make_synthetic_session(path, scripted, seed=1):
 
 
 def test_human_like_session_passes(tmp_path):
-    r = session_metrics(load_session(make_synthetic_session(tmp_path / "human.ndjson", scripted=False)))
-    verdict, rej, rev = flags(r)
+    r = metrics_of(load_session(make_synthetic_session(tmp_path / "human.ndjson", scripted=False), STUDY))
+    verdict, rej, rev = flags(r, STUDY)
     assert (verdict, rej, rev) == ("OK", [], [])
     assert r["coverage"] == 1.0
 
 
 def test_scripted_session_is_flagged_on_every_automation_signal(tmp_path):
-    r = session_metrics(load_session(make_synthetic_session(tmp_path / "bot.ndjson", scripted=True)))
-    verdict, rej, rev = flags(r)
+    r = metrics_of(load_session(make_synthetic_session(tmp_path / "bot.ndjson", scripted=True), STUDY))
+    verdict, rej, rev = flags(r, STUDY)
     assert verdict == "REJECT-ELIGIBLE"
     assert "120 script-generated input events" in rej
     assert any(x.startswith("text not typed") for x in rej + rev)
@@ -285,3 +302,43 @@ def test_scripted_session_is_flagged_on_every_automation_signal(tmp_path):
     # one input per 0.5 s with a jump every 4000 samples (200 s): jumps at 0, 200, 400, 600, 800 s
     assert r["n_teleports"] == 5
     assert math.isclose(r["frac_pure_axis"], 1.0)
+
+
+# ------------------------------------------------- settings come from the study file ---
+def other_study():
+    """The heights study with a renamed 2D dimension, as another study might define it."""
+    study = copy.deepcopy(STUDY)
+    dims = study["rating"]["dimensions"]
+    dims["valence_arousal"] = dims.pop("affect2d")
+    study["rating"]["assignable"] = ["valence_arousal"]
+    return study
+
+
+def test_2d_sessions_are_recognised_from_the_study_file(tmp_path):
+    lines = [{"type": "meta", "prolific_pid": "P2", "dimension": "valence_arousal", "n_loads": 1},
+             {"type": "chunk", "t": "x", "tag": "film", "chunk": 0,
+              "samples": [[0.0, 0.0, 0.0, 40.0, 60.0, 1]], "inputs": [], "events": []}]
+    s = load_session(write_ndjson(tmp_path / "s.ndjson", lines), other_study())
+    assert s.is2d
+    assert (s.film_samples["value_x"].iloc[0], s.film_samples["value_y"].iloc[0]) == (40.0, 60.0)
+    # practice error 18 is fine for a 2D dimension, whatever it is called
+    assert flags(ok_row(study="valence_arousal", practice_err_last=18), other_study())[0] == "OK"
+
+
+def test_review_answers_come_from_the_study_file():
+    study = copy.deepcopy(STUDY)
+    study["qc"]["review_answers"] = [{"question": "seen_before", "answer": "Not sure", "reason": "maybe seen"}]
+    assert flags(ok_row(q_seen_before="Not sure"), study) == ("REVIEW", [], ["maybe seen"])
+    assert flags(ok_row(q_seen_before="Yes"), study)[0] == "OK"
+
+
+def test_scope_filter_splits_exploratory_and_confirmatory_sessions():
+    explo, confirm = "6ac1d73ab02248cd4974b96c", "a" * 24
+    rep = pd.DataFrame({"prolific_study_id": [explo, confirm, "TESTSTUDY", None]})
+    assert list(scope_filter(rep, STUDY)["prolific_study_id"]) == [explo]
+    assert list(scope_filter(rep, STUDY, "confirmatory")["prolific_study_id"]) == [confirm]
+    assert len(scope_filter(rep, STUDY, "all")) == 4
+    # a study without an exploratory/confirmatory split: every real Prolific session
+    no_split = copy.deepcopy(STUDY)
+    del no_split["qc"]["exploratory_studies"]
+    assert list(scope_filter(rep, no_split)["prolific_study_id"]) == [explo, confirm]
