@@ -1,4 +1,7 @@
-# Study design
+# Study design: heights film (example study)
+
+The design of the study that `studies/heights-film/study.yaml` configures (tag `v1.0-heights-film` is the code
+used to collect its data). Settings named below are in that study file.
 
 ## Goal
 Continuous, time-locked self-report of affect while watching `towerClimb.mp4` (808.9 s, H.264, 25 fps,
@@ -26,7 +29,7 @@ touchpad implementation (AffectTracker), not a browser mouse interface, so usabi
 measured here (post-film questions below) and should be checked in the pilot.
 
 ## Timeline
-1. **Information + consent** (`texts.js`). Six statements must be ticked, including not using AI.
+1. **Information + consent** (study file, `texts`). Seven statements must be ticked, including not using AI.
    Prominent "Please do not use AI" notice. Decline → no-consent code.
 2. **Device check**: desktop, window ≥ 1000×600. Deliberately strict (decided 2026-10-04 after a pilot
    Chromebook with a 533 px-high window was excluded): small screens are not wanted.
@@ -111,12 +114,14 @@ last saved position (logged as a separate `film_resume_<n>` trial; the meta line
 `resumed_film_from`). After the film, a reload goes to the questions. Study assignment is fixed across reloads.
 
 ## Film delivery (from the main run on)
-- **Encoding:** `media/towerClimb_crf29.mp4` (`scripts/encode_film.sh`): same 1280×720, 25 fps, all 20,222 frames
+- **Encoding:** `media/towerClimb_crf29.mp4` (`scripts/encode_film.sh media/towerClimb.mp4 media/towerClimb_crf29.mp4`): same 1280×720, 25 fps, all 20,222 frames
   with original timestamps, audio removed (played muted), H.264 CRF 29. 147 MB instead of 288 MB; SSIM 0.979 vs
   the original; fine detail very slightly softer (see `docs/img/encoding_comparison.png`).
 - **Pre-download:** after consent + device check the whole file is fetched in the background and played from
   memory, so playback cannot buffer (one pilot participant had 52 s of stalls while streaming). If it is not ready
-  before the pre-film STICSA, a progress page waits for it; after 10 min of waiting, or on error, the film streams.
+  before the pre-film STICSA, a progress page waits for it; after 5 min of waiting, or on a download error, the study
+  ends and the participant is asked to return it (completion code `VMPSLOWD`, no penalty). (Settings
+  `film.preload_max_wait_minutes` and `film.return_on_slow_download`; with the latter off, the film streams instead.)
   Logged: `preload` lines (duration, MB/s), `download_gate` wait, `video_source` (download/stream) on the film trial.
 
 ## Main run (decided 2026-10-04)
@@ -131,5 +136,5 @@ opens. £4.80 / 30 min estimate (pilot median 24.3 min overall, 24.3–28.6 min 
 
 ## Open points
 - Resolved 2026-10-04: the film shows several people, so items refer to "the people in the film" / "the people on screen".
-- Prolific profile demographics are not collected or mentioned in the consent text; add a sentence first if
-  you want Prolific's demographic export.
+- Resolved: the information sheet states that basic demographic information is received from the Prolific profile
+  (age, sex, first language, countries, student and employment status), so Prolific's demographic export can be used.
