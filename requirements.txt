@@ -1,0 +1,10 @@
+# Python packages for the QC and deploy scripts and the tests:
+#   python -m pip install -r requirements.txt
+numpy
+pandas
+matplotlib
+requests
+pyyaml
+pytest
+# only for the automated browser run-through (tests/e2e_local.py)
+playwright

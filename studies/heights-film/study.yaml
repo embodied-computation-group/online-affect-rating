@@ -1,0 +1,525 @@
+# =====================================================================================================
+# STUDY FILE - the heights film study (example)
+#
+# Everything that is specific to one study lives in this one file: the film, the rating scales, the
+# participant information and consent text, the questionnaires, the Prolific settings and the
+# quality-control thresholds. The task in the browser, the deploy scripts and the QC scripts all read it.
+#
+# This is the configuration of the heights film validation study (preregistration osf.io/s2yvb).
+# With this file the platform runs the same session as the tagged release v1.0-heights-film.
+# To make your own study, copy this folder to studies/<your-study>/ and edit the copy
+# (step by step: docs/tutorial.md).
+#
+# YAML in two minutes
+#   - Indentation (spaces, never tabs) shows what belongs to what.
+#   - Text after a # is a comment and is ignored.
+#   - Put text in "double quotes" when it contains a colon followed by a space (": "), starts with a
+#     special character, or is a word like Yes, No, On, Off, True, False (unquoted, Python reads those
+#     as true/false instead of text).
+#   - A long text can follow "|" on its own lines; the line breaks are kept (HTML ignores them).
+#   - Lists are lines starting with "- ", or [a, b, c] on one line.
+#   - In texts, {placeholders} such as {pi_name} are replaced by the values from the "about" section
+#     (plus {film_length}, {dimension_label} and {rating_control}).
+# Check the file after editing:  python scripts/check_study.py --study studies/<your-study>
+# =====================================================================================================
+
+# Test mode lets the testing URL parameters start_time, max_wait_s and video work on JATOS (they
+# always work when the task runs locally). Keep this false for real participants. For a test run on
+# JATOS you can also switch it on without redeploying: JATOS study properties -> Study input:
+# {"testMode": true}
+test_mode: false
+
+# ---- Who runs the study: shown on the information sheet and in the debrief ----------------------------
+about:
+  title: Feelings while watching a film
+  institution: Center of Functionally Integrative Neuroscience (CFIN), Aarhus University, Denmark
+  pi_name: Micah Allen
+  contact_email: micah@cfin.au.dk
+  data_controller: Aarhus University, Nordre Ringgade 1, 8000 Aarhus C, Denmark (CVR 31119103)
+  dpo_email: dpo@au.dk
+  duration: about 30 minutes          # whole session, as told to participants
+  payment: "£4.80"
+
+# ---- The film -------------------------------------------------------------------------------------------
+film:
+  # On JATOS: the file name in the study assets (upload it with scripts/deploy_jatos.py --video),
+  # or a full https:// address.
+  file: towerClimb_crf29.mp4
+  # For local runs: where the film is, relative to the repository folder (media/ is not in git).
+  local_file: media/towerClimb_crf29.mp4
+  # Exact length in seconds (QC uses it for coverage and plots). 808.9 s = 13:28.9.
+  duration_s: 808.9
+  # How the length is described to participants.
+  length_text: about 13½ minutes
+  # The film is played without sound (as in the fMRI session).
+  muted: true
+  # Download the whole film in the background after consent and the device check, and play it from
+  # memory so playback never buffers. If it is not ready when the film should start, a progress page
+  # waits for it. After preload_max_wait_minutes (or on a download error): if return_on_slow_download
+  # is true, the study ends and the participant is asked to return it (slow_download code below);
+  # otherwise the film is streamed instead.
+  preload: true
+  preload_max_wait_minutes: 5
+  return_on_slow_download: true
+
+# ---- Continuous rating during the film ----------------------------------------------------------------
+rating:
+  # "joystick" (mouse moves the rating without clicking; overlay inside the film frame) or "slider"
+  # (1D only). The URL parameter ?input= overrides this.
+  input_mode: joystick
+  # Joystick: mouse travel for the full scale, as a fraction of the screen height.
+  joystick_full_scale_frac: 0.6
+  # After a page reload, resume the film this many seconds before the last saved position.
+  resume_rewind_seconds: 5
+  sample_rate_hz: 20
+  # Rating data are saved every chunk_seconds during the practice and the film (crash backup).
+  chunk_seconds: 30
+  # Device check: smaller browser windows are excluded.
+  min_screen_width: 1000
+  min_screen_height: 600
+
+  # Rating dimensions. Each Prolific study passes ?dim=<name> in its URL (each participant does one);
+  # without it, one is chosen at random from `assignable`. `study` is saved with the data.
+  #   axes: 1  one scale (vertical bar): question, low, high, start (0-100)
+  #   axes: 2  2D grid: x = x_low..x_high, y = low..high; start_x and start (0-100)
+  assignable: [anxiety, affect2d]
+  dimensions:
+    anxiety:
+      study: 1
+      axes: 1
+      label: how tense or anxious you felt          # used in the debrief: {dimension_label}
+      question: "How <b>tense or anxious</b> do you feel right now?"
+      low: Not at all
+      high: Extremely
+      start: 0
+      note: This is about your own feelings while watching, including feeling anxious for the people on screen.
+    affect2d:
+      study: 2
+      axes: 2
+      label: how pleasant or unpleasant and how activated you felt
+      question: "How do you feel right now? <b>Left&ndash;right:</b> unpleasant&ndash;pleasant. <b>Down&ndash;up:</b> low&ndash;high activation."
+      x_low: Unpleasant
+      x_high: Pleasant
+      low: Low activation
+      high: High activation
+      start: 50
+      start_x: 50
+      note: "Left&ndash;right shows how unpleasant or pleasant you feel (neutral in the centre). Down&ndash;up shows how activated you feel: feeling activated or stirred up, regardless of whether the feeling is pleasant or unpleasant."
+
+# ---- Tracking practice before the film ------------------------------------------------------------------
+practice:
+  # The practice is repeated once if the tracking error (0-100 units) is above this:
+  max_error_1d: 15        # mean absolute error, one scale
+  max_error_2d: 20        # mean distance, 2D grid
+  # Target path, [time in s, value]; repeat a time for a step change.
+  keyframes_1d:
+    - [0, 15]
+    - [7, 15]
+    - [7, 85]
+    - [14, 85]
+    - [14, 50]
+    - [19, 50]
+    - [29, 95]
+    - [34, 95]
+    - [34, 30]
+    - [40, 30]
+  # 2D target path, [time in s, x, y]: the four corners, the centre, then a diagonal glide.
+  keyframes_2d:
+    - [0, 20, 20]
+    - [6, 20, 20]
+    - [6, 80, 80]
+    - [12, 80, 80]
+    - [12, 20, 80]
+    - [18, 20, 80]
+    - [18, 80, 20]
+    - [24, 80, 20]
+    - [24, 50, 50]
+    - [28, 50, 50]
+    - [36, 90, 65]
+    - [40, 90, 65]
+
+# ---- Participant information, consent and debrief ----------------------------------------------------------
+# All participant-facing statements for ethics review are here and in the questionnaires below.
+# (No ethics approval line: survey studies like this need no ethics review in Denmark - Aarhus
+# University standard waiver, confirmed by PI 2026-10-04.)
+texts:
+  # Shown before consent (HTML).
+  information: |
+    <h2>{title}</h2>
+    <p class="muted">Participant information. Please read carefully before deciding whether to take part.</p>
+
+    <h3>Who is doing this research?</h3>
+    <p>This study is run by {pi_name} and colleagues at the {institution}.</p>
+
+    <h3>What is the study about?</h3>
+    <p>We want to understand how people's feelings change from moment to moment while they watch a film.
+    The ratings you give will be combined with those of other participants to describe how the film is
+    experienced over time, and used to help analyse brain imaging data collected from other people
+    who watched the same film.</p>
+
+    <h3>What will I do?</h3>
+    <ul>
+      <li>Answer two short questions and do a short practice of the rating method.</li>
+      <li>Answer a short questionnaire about how you feel right now, both before and after the film.</li>
+      <li>Watch a film of {film_length} (without sound) in full-screen mode, and continuously report how
+      you feel by moving your mouse.</li>
+      <li>Answer some short questions before and after the film, including a short written description
+      (at least 100 words) of what you saw and how it made you feel.</li>
+    </ul>
+    <p>The whole study takes {duration}. You need a desktop or laptop computer with a physical mouse or trackpad
+    (not a touchscreen, pen/drawing tablet, or remote-desktop/virtual-machine session).
+    Please take part in a quiet room where you can watch the video carefully, without distractions or interruptions.
+    You will be paid {payment} through Prolific on completion.</p>
+
+    <h3>Are there any risks?</h3>
+    <p><b>Content note:</b> the film is first-person footage of people climbing up and around a very tall
+    skyscraper. It contains no violent, sexual or graphic content: nobody is hurt and the climb ends safely.
+    Some people find heights footage tense or uncomfortable, and it may be distressing if you have a strong
+    fear of heights. If you think you would find this distressing, please do not take part.
+    There are no other known risks beyond those of normal computer use.</p>
+
+    <div class="ai-notice">
+      <h3>Please do not use AI or automated tools</h3>
+      <p>Please do <b>not</b> use AI tools (such as ChatGPT or similar assistants) or any automated software (bots,
+      scripts, auto-clickers or browser agents) to complete the task or to answer any of the questions. We are
+      interested in <b>your own</b> experience and words. Copying and pasting is disabled, and we record your mouse
+      movements, when the study window loses focus, and attempts to copy or paste. If we find clear evidence that AI
+      or automated tools were used, your answers will not be used and your submission may be rejected.</p>
+    </div>
+
+    <h3>Do I have to take part?</h3>
+    <p>No. Taking part is voluntary. You can stop at any time without giving a reason by closing this window
+    and returning the study on Prolific. Following Prolific's rules, payment is made for completed
+    sessions.</p>
+
+    <h3>What data are collected and how are they used?</h3>
+    <p>We collect your Prolific ID, your ratings and answers, and technical information needed to check data
+    quality (browser type, screen size, timing of the film and of your responses, your mouse movements during the
+    rating task, whether you left full-screen mode or switched to another window, attempts to copy or paste, and
+    typing statistics such as the number of keystrokes in your written answer). We do <b>not</b> ask for your name or contact details, and we do not record any video or
+    audio of you. We also receive basic demographic information from your Prolific profile (age, sex, first language,
+    country of residence, nationality, country of birth, and student and employment status), which we use to describe
+    the group of people who took part.</p>
+    <p>Your Prolific ID is used only to manage payment and to link your data if you contact us; it is replaced by a
+    random code before analysis and is never published. Data are stored on secure servers in the European Union.
+    The anonymised data (without Prolific IDs) may be shared in open research repositories and reported in
+    scientific publications, in a form that cannot identify you. Data are kept for at least five years after
+    the last publication, in line with Aarhus University's research integrity rules.</p>
+
+    <h3>Your data protection rights</h3>
+    <p>The data controller is {data_controller}. Data are processed for scientific research in the public
+    interest (EU General Data Protection Regulation, Article 6(1)(e)). You have the right to request access to,
+    correction of, or deletion of your data. To do this, contact us with your Prolific ID. Once data have been
+    anonymised we can no longer identify them, so deletion is only possible before that point.
+    You can contact Aarhus University's data protection officer at <a href="mailto:{dpo_email}">{dpo_email}</a>,
+    and you have the right to complain to the Danish Data Protection Agency (Datatilsynet,
+    <a href="https://www.datatilsynet.dk" target="_blank" rel="noopener">www.datatilsynet.dk</a>).</p>
+
+    <h3>Questions?</h3>
+    <p>Contact {pi_name} at <a href="mailto:{contact_email}">{contact_email}</a>,
+    or message us through Prolific.</p>
+
+  # Each statement must be ticked before the consent button works. Saved with the consent trial.
+  consent_statements:
+    - I have read and understood the information about this study.
+    - I understand that taking part is voluntary and that I can stop at any time without giving a reason.
+    - I understand that the film shows people climbing at great heights, and I do not expect this to be seriously distressing for me.
+    - I understand how my data will be collected, stored and shared, as described above.
+    - I will not use AI tools or automated software to complete the task or answer the questions, and I understand that if clear evidence of their use is found, my answers will not be used and my submission may be rejected.
+    - I am 18 years of age or older.
+    - I agree to take part in this study.
+  consent_button: I consent, begin the study
+  decline_button: I do not wish to take part
+
+  # Shown after the last questionnaire page, before returning to Prolific (HTML).
+  debrief: |
+    <div class="text-page"><h2>Thank you for taking part!</h2>
+    <p>You rated <b>{dimension_label}</b> continuously while watching the film. In a related study, other participants
+    rated their feelings in a different way. By combining many people's ratings over time we can describe how the
+    film is experienced moment by moment, and relate this to brain activity recorded from people who watched the
+    same film in an MRI scanner.</p>
+    <p>If watching the film left you feeling uncomfortable, this usually passes quickly. If it does not, or if you
+    have any questions or concerns about the study, please contact {pi_name} at
+    <a href="mailto:{contact_email}">{contact_email}</a>.</p>
+    <p>Please do not share details of the film or the study with other potential participants.</p>
+    <p>Press the button to save your answers and return to Prolific.</p></div>
+
+# ---- Rating-scale questionnaires shown as one table (used by "scale" pages below) ---------------------------
+scales:
+  # STICSA state form, somatic subscale (Ree, French, MacLeod & Locke, 2008): all 11 items, original
+  # item numbers, wording and order. Wording verified against the published state form reproduced in
+  # Roberts (2013, York University dissertation, Appendix B); subscale membership also per
+  # Frontiers in Psychology 2021, 12:644889, Table 2. Do not add, drop or reword items.
+  # Saved per item with its number; total = sum of all items, only when every item is answered.
+  sticsa:
+    title: Current feelings
+    instruction: Please indicate how you feel right now, at this moment.
+    options:
+      - {value: 1, label: Not at all}
+      - {value: 2, label: A little}
+      - {value: 3, label: Moderately}
+      - {value: 4, label: Very much so}
+    items:
+      - {item: 1, text: My heart beats fast.}
+      - {item: 2, text: My muscles are tense.}
+      - {item: 6, text: I feel dizzy.}
+      - {item: 7, text: My muscles feel weak.}
+      - {item: 8, text: I feel trembly and shaky.}
+      - {item: 12, text: My face feels hot.}
+      - {item: 14, text: My arms and legs feel stiff.}
+      - {item: 15, text: My throat feels dry.}
+      - {item: 18, text: My breathing is fast and shallow.}
+      - {item: 20, text: I have butterflies in the stomach.}
+      - {item: 21, text: My palms feel clammy.}
+
+# ---- Questionnaires ---------------------------------------------------------------------------------------
+# Pages are shown in the order listed, at four places in the session:
+#   intro        after consent and the device check, before full screen and the practice
+#   before_film  right before the film (after the practice); each page is shown once, also after a reload
+#   after_film   right after the film, still in full screen; each page is shown once
+#   end          after leaving full screen; then the debrief
+#
+# Page types (all built from standard jsPsych survey plugins):
+#   likert        jsPsych survey-likert: questions with labels (a list of options, left to right).
+#                 A question with `correct: <index>` is an attention check (0 = leftmost option);
+#                 a page with an attention check is saved with task "attention" and page "<name>".
+#   multi_choice  jsPsych survey-multi-choice: one answer per question from `options`
+#   multi_select  jsPsych survey-multi-select: any number of `options`
+#   text          jsPsych survey-text: short typed answers (`rows` = height of the box)
+#   free_text     a longer typed answer with a minimum number of words (`min_words`) and typing
+#                 statistics (keystrokes, time away) for quality control
+#   scale         a table from the `scales` section; `timepoint` (e.g. pre/post) is saved with it
+#   html_form     jsPsych survey-html-form with your own `html`
+# Every question is required unless it says `required: false`. Answers are saved under the
+# question `name`; the page is saved with task = its `name` (see docs/data.md).
+questionnaires:
+  intro:
+    # Trait measure before the film can colour it, plus attention check 1.
+    - type: likert
+      name: pre_film
+      preamble: "<h3>A few questions about you</h3>"
+      questions:
+        - name: height_fear
+          prompt: In everyday life, how afraid are you of heights?
+          labels: [Not at all, "", "", "", "", "", Extremely]
+        # Attention checks: instructed-response items (Prolific-compliant: explicit instruction on the
+        # same page, no memory, no time limit). Prolific allows rejection only if BOTH are failed.
+        - name: attention_1
+          prompt: To show that you are reading carefully, please select <b>Strongly disagree</b> for this statement.
+          labels: [Strongly disagree, Disagree, Agree, Strongly agree]
+          correct: 0
+
+  before_film:
+    - type: scale
+      scale: sticsa
+      timepoint: pre
+
+  after_film:
+    # Post-STICSA immediately after playback, before any other question.
+    - type: scale
+      scale: sticsa
+      timepoint: post
+
+  end:
+    # Helps interpret the trajectory: negative + activated is not automatically anxiety (could be
+    # concern, disgust, anger, mixed excitement). Same questions for both rating dimensions.
+    - type: likert
+      name: post_feelings
+      preamble: "<h3>How you felt during the film</h3>"
+      questions:
+        - name: anxiety_overall
+          prompt: Overall, how tense or anxious did you feel while watching the film?
+          labels: [Not at all, "", "", "", "", "", Extremely]
+        - name: concern_safety
+          prompt: How concerned did you feel for the safety of the people in the film?
+          labels: [Not at all, "", "", "", "", "", Extremely]
+        - name: body_intensity
+          prompt: How strong were any bodily sensations you felt while watching (for example sweaty palms, a racing heart, or tingling)?
+          labels: [None at all, "", "", "", "", "", Very strong]
+
+    - type: multi_select
+      name: post_body
+      questions:
+        - name: body_sensations
+          prompt: Which bodily sensations, if any, did you notice while watching? (Select all that apply.)
+          options:
+            - Sweaty or tingling palms
+            - Tingling in the feet or legs
+            - Racing or pounding heart
+            - Butterflies or a sinking feeling in the stomach
+            - Muscle tension or gripping
+            - Holding my breath or faster breathing
+            - Dizziness or a sense of vertigo
+            - None of these
+
+    # Rating-task interference, plus attention check 2.
+    - type: likert
+      name: usability
+      preamble: "<h3>About the rating task</h3>"
+      questions:
+        - name: distracting
+          prompt: How much did rating your feelings distract you from watching the film?
+          labels: [Not at all, "", "", "", "", "", Extremely]
+        - name: difficult
+          # {rating_control} becomes "mouse control" or "slider"
+          prompt: How difficult was it to use the {rating_control} to give your ratings?
+          labels: [Not at all, "", "", "", "", "", Extremely]
+        - name: attention_2
+          prompt: This is an attention check. Please select <b>Extremely</b> (the option furthest to the right).
+          labels: [Not at all, "", "", "", "", "", Extremely]
+          correct: 6
+
+    - type: multi_choice
+      name: post_mc
+      questions:
+        - name: seen_before
+          prompt: Had you seen this film before?
+          options: ["Yes", "No", "Not sure"]
+        - name: full_attention
+          prompt: Did you watch the whole film without doing anything else at the same time? (Your answer does not affect your payment.)
+          options: ["Yes", "Mostly", "No"]
+        - name: input_device
+          prompt: What did you use to give your ratings?
+          options: [Mouse, Trackpad / touchpad, Other]
+
+    # Required written description; paste is blocked and typing is counted.
+    - type: free_text
+      name: final_text
+      min_words: 100
+      prompt: |
+        <h3>Your experience of the video</h3>
+        <p>Please describe what you saw in the video and how it made you feel. You may describe particular moments,
+        thoughts, or physical sensations, including if you felt little or no emotional response. Please write at least
+        100 words.</p>
+
+    - type: text
+      name: feedback
+      questions:
+        - name: feedback
+          prompt: Do you have any comments or feedback about the study, the rating task, or any technical difficulties you experienced? (Optional)
+          rows: 5
+          required: false
+
+# ---- Prolific ---------------------------------------------------------------------------------------------
+# Used by scripts/create_prolific_study.py (creates draft studies only) and qc/review.py.
+prolific:
+  # Prolific project the draft studies are created in.
+  project: 6ac1c23dd2c370786a5fa2fa
+  # Internal study name on Prolific: "<internal_name> <dimension> <tag>".
+  internal_name: vmp towerClimb
+  # Completion codes: the task sends participants back to Prolific with these.
+  completion_codes:
+    complete:
+      code: VMPDONE1
+      code_type: COMPLETED
+      actions: [{action: MANUALLY_REVIEW}]
+    slow_download:
+      code: VMPSLOWD
+      code_type: OTHER
+      actions:
+        - action: REQUEST_RETURN
+          return_reason: The film could not be downloaded quickly enough on your connection, so please return the study (no penalty).
+    no_consent:
+      code: VMPNOCON
+      code_type: NO_CONSENT
+      actions:
+        - action: REQUEST_RETURN
+          return_reason: You chose not to give consent, so please return the study.
+  # The study listing (Prolific API fields).
+  listing:
+    name: Feelings while watching a film
+    description: "Watch a short first-person film (about 13½ minutes) of people climbing a skyscraper (no one is hurt), and continuously report how you feel by moving your mouse. Includes a short practice, some questions, and a short written description (at least 100 words). The film has no sound. Requires a desktop/laptop computer with a physical mouse or trackpad (not a touchscreen, pen/drawing tablet, or remote-desktop/virtual-machine session), and watching carefully in a quiet room, in full-screen mode, without distractions. Content note: heights footage; please do not take part if you have a strong fear of heights."
+    prolific_id_option: url_parameters
+    estimated_completion_time: 30        # minutes
+    maximum_allowed_time: 90             # minutes
+    reward: 480                          # in pence/cents: 480 = £4.80
+    device_compatibility: [desktop]
+    peripheral_requirements: []
+    submissions_config: {max_submissions_per_participant: 1}
+  # Participant filters: fluent English, normal/corrected vision, approval rate >= 95%, >= 20 submissions.
+  filters:
+    - {filter_id: fluent-languages, selected_values: ["19"]}
+    - {filter_id: vision, selected_values: ["0"]}
+    - {filter_id: approval_rate, selected_range: {lower: 95, upper: 100}}
+    - {filter_id: approval_numbers, selected_range: {lower: 20}}
+  # Prolific studies whose submissions qc/review.py downloads (name: Prolific study id).
+  studies:
+    pilot_anxiety: 6ac1d73ab02248cd4974b96c
+    pilot_affect2d: 6ac1d740c40e9350758dd8b4
+    main_c1: 6ac1ee01e5ff2d1969d03f93
+    main_c2: 6ac1ee0266279905720bd031
+    main_c3: 6ac1ee022838bc6b37c30c18
+    main_c4: 6ac21b0a039963bf6d587ce4
+    main_c5: 6ac23d7e47e222d973a7d77b
+
+# ---- JATOS ------------------------------------------------------------------------------------------------
+jatos:
+  # The JATOS study (its UUID or numeric id): scripts/deploy_jatos.py uploads to it and qc/review.py
+  # downloads its results. The server address and your API token go in secrets.env.
+  study_id: c4dff945-fbea-45df-9984-2856a87ed904
+  component_title: Film rating
+
+# ---- Quality control (qc/) ------------------------------------------------------------------------------
+# Advisory flags for reviewing submissions; see qc/README.md. Values as used in the heights study.
+qc:
+  thresholds:
+    teleport_px: 250                  # single raw mouse event larger than this ...
+    teleport_isolation_ms: 100        # ... with no other mouse event within this time either side = "teleport"
+    teleport_count_review: 3
+    stalled_s_review: 30              # total buffering time during the film
+    identical_run_review: 30          # consecutive identical (dx, dy) mouse steps ...
+    identical_min_px: 3               # ... counting only steps of at least this size
+    big_step_frac_review: 0.10        # > this fraction of film mouse steps > teleport_px: erratic input
+    pure_axis_review: 0.98            # fraction of moving events with an exactly-zero off-axis component
+    pure_axis_min_events: 200
+    coverage_min: 0.95                # fraction of the film with playing samples
+    interruptions_review: 3
+    interrupted_s_review: 60
+    no_input_s_review: 180            # longest stretch of film without any rating input
+    away_s_review: 120                # total time the window was unfocused/hidden
+    practice_mae_review: 15           # after the repeat, one scale
+    practice_err2d_review: 20         # after the repeat, 2D grid
+    quadrant_min: 3                   # of the 6 placement-practice scenarios (2D)
+    attention_failed_reject: 2        # failed attention checks that make a session reject-eligible
+    text_keys_per_char_reject: 0.2    # typed far fewer keys than characters -> text was inserted
+    text_min_chars_for_key_check: 200
+    typing_cpm_review: 700            # characters per minute over the whole text page
+    ai_markers_review: 2
+    duplicate_text_ratio: 0.8
+
+  # Answers that are a reason to look at a session (question name: answer).
+  review_answers:
+    - {question: seen_before, answer: "Yes", reason: had seen the film}
+    - {question: full_attention, answer: "No", reason: reports not watching attentively}
+
+  # Preregistered hard exclusions (osf.io/s2yvb, "Data inclusion and exclusion", rules 1-7), applied by
+  # qc_lib.prereg_hard_exclusion. These are fixed by the preregistration: do not change them for this study.
+  hard_exclusions:
+    attention_failed_at_least: 2
+    text_min_chars: 200
+    text_keys_per_char_below: 0.2
+    big_step_frac_above: 0.10
+    stalled_s_above: 30
+    interrupted_s_above: 60
+    coverage_below: 0.95
+    answers:
+      - {question: seen_before, answer: "Yes", reason: seen the film before}
+
+  # qc/engagement.py (2D ratings): were people actually watching?
+  engagement:
+    bout_gap_s: 2.0                   # inputs separated by more than this start a new movement bout
+    window_s: 10.0                    # +- window around "group events"
+    event_pct: 10                     # top % of group-mean change rate counted as events
+    n_permutations: 1000
+    min_bouts_per_min: 1.0            # fewer bouts ...
+    max_gap_s: 180                    # ... or a longer gap = sparse ratings
+    min_r: 0.3                        # weaker agreement with the group (both axes) = weak agreement
+
+  # Exploratory vs confirmatory samples (heights paper, docs/preregistration.md there). Exploratory =
+  # pilot + main-run cohort 1; every later Prolific study is confirmatory. QC scripts that use
+  # scope_filter default to the exploratory sample; pass --confirmatory or --all to change that.
+  # Leave this out for a study without such a split.
+  exploratory_studies:
+    - 6ac1d73ab02248cd4974b96c        # pilot, Study 1 (anxiety)
+    - 6ac1d740c40e9350758dd8b4        # pilot, Study 2 (affect2d)
+    - 6ac1ee01e5ff2d1969d03f93        # main run cohort 1
