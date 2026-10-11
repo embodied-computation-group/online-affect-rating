@@ -125,9 +125,11 @@ last saved position (logged as a separate `film_resume_<n>` trial; the meta line
   Logged: `preload` lines (duration, MB/s), `download_gate` wait, `video_source` (download/stream) on the film trial.
 
 ## Main run (decided 2026-10-04)
-Study 2 (valence × arousal) only, N = 60 in three cohorts of 20, each a separate Prolific study with a **50/50 sex
-quota** (Prolific Sex screener; balanced so the mean can later be re-weighted, e.g. to the fMRI sample's ~2/3
-women), blocking both pilot studies and earlier cohorts. Each cohort is reviewed (qc/review.py) before the next
+Study 2 (valence × arousal) only, each cohort a separate Prolific study with a **50/50 sex quota** (Prolific Sex
+screener; balanced so the mean can later be re-weighted, e.g. to the fMRI sample's ~2/3 women), blocking both pilot
+studies and earlier cohorts. Planned as three cohorts of 20; as run, there were four main-run cohorts after the
+pilot: cohort 1 (20 completed; exploratory sample, with the 3 pilot sessions), cohorts 2 and 3 (20 each) and
+cohort 4 (90), which form the confirmatory sample (130 completed; 153 completed in all). Each cohort is reviewed (qc/review.py) before the next
 opens. £4.80 / 30 min estimate (pilot median 24.3 min overall, 24.3–28.6 min for the 2D task).
 
 ## Payment and cost
